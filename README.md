@@ -141,6 +141,7 @@ stays, marked "not found" in red, so a typo is visible rather than mysterious.
 | `[` / `]` | Move the ticker under the cursor up / down the list |
 | drag a row | Reorder with the mouse — a marker shows where it will land |
 | `g` / `G` | First / last row of the current list |
+| `b` | Open the story under the cursor in the browser |
 | `r` | Refresh now |
 | `Esc` | Close an open story or page, cancel the add field, or close the panel |
 
@@ -153,10 +154,18 @@ gap it is going into, and the list is rewritten on the drop rather than under
 the pointer. Middle-clicking a watchlist row removes it. Middle-clicking the
 bar icon refreshes.
 
-**Nothing in the panel launches a browser.** There is no click, and no key,
-that navigates away from the shell.
+**The panel leaves the shell in exactly one place**: the third click on a
+story, or `b`. Everything else stays put. Clicking a news row selects it,
+clicking the selected row opens the preview, and clicking a row whose preview
+is already open hands the story to your browser — each click one step further
+in, so nothing throws you out by surprise. A row with no preview to show goes
+straight out on the second click.
 
-Reading more happens in place instead. A news row opens downward to show what
+That escalation is the whole design. The full text of an article is not
+reachable from a shell panel — see below — so rather than pretend, the panel
+shows you enough to decide and then gets out of the way.
+
+Reading in place comes first. A news row opens downward to show what
 its feed already carried alongside the headline, which differs by feed and is
 taken as it comes rather than forced into one shape:
 
@@ -166,18 +175,18 @@ taken as it comes rather than forced into one shape:
   summary, and it is arguably the more useful of the two: it tells you who
   else thought the story mattered.
 
-Related headlines wrap in full rather than being cut off at the width, and the
-row grows to fit them — the list scrolls, and expanding one brings it into
-view.
+An open row is a **preview**, deliberately: a summary capped at three lines,
+or one line per related headline with its outlet beside it. Enough to tell
+whether the story is worth opening, and no taller than a glance.
 
-That is everything there is. Google News carries at most five related items
-per story and no article body, and **the full text is not reachable from
-here**: its links are interstitials that resolve to the publisher in the
-browser's JavaScript, with no publisher URL anywhere in what a fetch returns,
-and MarketWatch — the one feed whose links are direct — answers `401` to
-anything but a browser. No mainstream finance feed ships `content:encoded`
-either. A panel that promised whole articles would be promising a scraper
-against a dozen paywalls.
+It is also all there is. Google News carries at most five related items per
+story and no article body, and **the full text is not reachable from here**:
+its links are interstitials that resolve to the publisher in the browser's
+JavaScript, with no publisher URL anywhere in what a fetch returns, and
+MarketWatch — the one feed whose links are direct — answers `401` to anything
+but a browser. No mainstream finance feed ships `content:encoded` either. So
+the full story is a click away in a real browser rather than a scraper's
+approximation of one in a bar panel.
 
 Both arrived with the item in the original fetch, so opening a story costs no
 request and reaches nowhere. Press `o`, `Enter` or `Space` on the row, or
@@ -218,6 +227,11 @@ a chart, and the fundamentals underneath. `Esc` brings the news back.
  High        328.40    P/E                  37.48
  …
 ```
+
+Hovering the chart reads a value off it: a crosshair, a dot on the point under
+the pointer, and its price and time in a readout that follows along the top
+and stops at the edges rather than hanging off them. On 1D that time is the
+minute; on the longer periods it is the day.
 
 Prices run down the right against their own gridlines, on round steps rather
 than wherever the data happened to land, and times run along the bottom — the

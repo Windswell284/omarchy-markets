@@ -342,6 +342,23 @@ Panel {
     root.expandedIndex = -1
   }
 
+  // The one thing in this panel that leaves the shell. It is deliberately
+  // behind a second click -- the first opens the preview in place, and only a
+  // story you have already looked at can throw you into a browser.
+  function openStory(item) {
+    var url = item && item.link ? String(item.link) : ""
+    if (url === "") return
+    // execArgv rather than a shell string: the URL is feed data.
+    Util.execArgv(["omarchy-launch-browser", url])
+  }
+
+  function openStoryUnderCursor() {
+    if (root.section === 1)
+      root.openStory(root.marketNews[root.mnCursor])
+    else if (root.section === 2)
+      root.openStory(root.businessNews[root.bizCursor])
+  }
+
   function expandCurrent() {
     // In the watchlist the thing under the cursor is a company, and opening
     // one means its page rather than an expanded row.
@@ -1152,6 +1169,7 @@ Panel {
         else if (t === "[") { if (root.section === 0) root.moveTicker(root.wlCursor, -1) }
         else if (t === "]") { if (root.section === 0) root.moveTicker(root.wlCursor, 1) }
         else if (t === "o" || t === "O") root.expandCurrent()
+        else if (t === "b" || t === "B") root.openStoryUnderCursor()
         // Number keys pick a chart period, left to right as they are drawn.
         else if (root.pageOpen && t >= "1" && t <= "9") {
           var keys = Model.chartPeriodKeys()
@@ -1930,6 +1948,33 @@ Panel {
             readonly property int yAxisWidth: root.scaled(Style.space(52))
             readonly property int xAxisHeight: root.scaled(Style.space(19))
 
+            // The plot geometry, shared rather than repeated: the crosshair
+            // has to land on the line the canvas drew, to the pixel.
+            readonly property real plotPad: Math.max(2, Style.space(2))
+            property int hoverIndex: -1
+            readonly property var hoverPoint:
+              (root.pageChart && chartArea.hoverIndex >= 0
+               && chartArea.hoverIndex < root.pageChart.points.length)
+                ? root.pageChart.points[chartArea.hoverIndex] : null
+
+            function xFor(i) {
+              var n = root.pageChart ? root.pageChart.points.length : 0
+              if (n < 2) return 0
+              return chartArea.plotPad
+                   + (plot.width - 2 * chartArea.plotPad) * (i / (n - 1))
+            }
+
+            function yFor(v) {
+              var r = Model.chartRange(root.pageChart, root.pagePeriod)
+              if (!r) return 0
+              return plot.height - chartArea.plotPad
+                   - (plot.height - 2 * chartArea.plotPad) * ((v - r.min) / r.span)
+            }
+
+            // A chart the pointer has left, or a page that changed under it,
+            // must not keep a stale crosshair on screen.
+            onHoverPointChanged: if (root.pageChart === null) chartArea.hoverIndex = -1
+
             Item {
               id: plot
               anchors.left: parent.left
@@ -1964,7 +2009,7 @@ Panel {
                   var c = chartCanvas.series
                   if (!c || !c.points || c.points.length < 2) return
 
-                  var w = width, h = height, pad = Math.max(2, Style.space(2))
+                  var w = width, h = height, pad = chartArea.plotPad
                   // The same range the axis labels were computed from, so a
                   // gridline lands exactly on the number beside it.
                   var range = Model.chartRange(c, root.pagePeriod)
@@ -2026,6 +2071,77 @@ Panel {
                   ctx.lineJoin = "round"
                   ctx.stroke()
                 }
+              }
+
+              // Hovering reads a value off the line rather than estimating
+              // one off the axis. Drawn as items rather than into the canvas:
+              // a repaint of eight hundred points per mouse move to move one
+              // vertical line is a poor trade.
+              Rectangle {
+                visible: chartArea.hoverPoint !== null
+                width: Math.max(1, Style.space(1))
+                height: plot.height
+                x: Math.round(chartArea.xFor(chartArea.hoverIndex))
+                color: Util.alpha(root.fg, 0.28)
+              }
+
+              Rectangle {
+                visible: chartArea.hoverPoint !== null
+                width: root.scaled(Style.space(7))
+                height: width
+                radius: width / 2
+                x: Math.round(chartArea.xFor(chartArea.hoverIndex) - width / 2)
+                y: chartArea.hoverPoint
+                   ? Math.round(chartArea.yFor(chartArea.hoverPoint.v) - height / 2) : 0
+                color: chartCanvas.lineColor
+              }
+
+              Rectangle {
+                id: hoverLabel
+                visible: chartArea.hoverPoint !== null
+                radius: Style.cornerRadius
+                color: Util.alpha(root.fg, 0.12)
+                width: hoverText.implicitWidth + Style.space(14)
+                height: hoverText.implicitHeight + Style.space(7)
+                // Follows the pointer but stays inside the plot: a readout
+                // that hangs off the edge is unreadable exactly when the
+                // cursor is somewhere interesting.
+                x: Math.round(Math.max(0, Math.min(
+                     chartArea.xFor(chartArea.hoverIndex) - width / 2,
+                     plot.width - width)))
+                y: 0
+
+                Text {
+                  id: hoverText
+                  anchors.centerIn: parent
+                  text: chartArea.hoverPoint
+                    ? Model.formatPrice(chartArea.hoverPoint.v)
+                      + "   " + chartArea.hoverPoint.label : ""
+                  font.family: root.fontFamily
+                  font.pixelSize: root.fontSmall
+                  color: root.fg
+                  renderType: Text.NativeRendering
+                }
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                // Buttons stay with whatever is underneath: this reads the
+                // pointer, it does not want the click.
+                acceptedButtons: Qt.NoButton
+
+                onPositionChanged: function(mouse) {
+                  var n = root.pageChart ? root.pageChart.points.length : 0
+                  if (n < 2) { chartArea.hoverIndex = -1; return }
+                  var usable = plot.width - 2 * chartArea.plotPad
+                  if (usable <= 0) { chartArea.hoverIndex = -1; return }
+                  var frac = (mouse.x - chartArea.plotPad) / usable
+                  chartArea.hoverIndex = Math.max(0, Math.min(n - 1,
+                    Math.round(frac * (n - 1))))
+                }
+
+                onExited: chartArea.hoverIndex = -1
               }
             }
 
@@ -2376,7 +2492,8 @@ Panel {
         visible: newsRow.expanded
         spacing: Style.space(5)
 
-        // MarketWatch's one-sentence summary.
+        // MarketWatch's one-sentence summary. Capped: an open row is a
+        // preview of the story, and the story itself is a click away.
         Text {
           width: parent.width
           visible: (newsRow.modelData.summary || "") !== ""
@@ -2385,6 +2502,8 @@ Panel {
           font.pixelSize: root.fontSmall
           color: root.mutedColor
           wrapMode: Text.WordWrap
+          maximumLineCount: 3
+          elide: Text.ElideRight
           renderType: Text.NativeRendering
         }
 
@@ -2402,30 +2521,30 @@ Panel {
         Repeater {
           model: newsRow.modelData.related || []
 
-          // A headline cut off at 72% of the width was the thing making an
-          // open row look like it was holding something back. It wraps now,
-          // and the row grows to fit -- the list was always free to scroll.
-          delegate: Column {
+          // One line each, outlet alongside. The open row is a preview --
+          // enough to tell whether the story is worth the click that opens
+          // it -- so it stays the height of a glance.
+          delegate: Row {
             required property var modelData
             width: detailBlock.width
-            spacing: Style.space(1)
-            topPadding: Style.space(2)
+            spacing: Style.space(6)
 
             Text {
-              width: parent.width
+              width: Math.round(detailBlock.width * 0.72)
               text: modelData.title
               font.family: root.fontFamily
               font.pixelSize: root.fontSmall
               color: root.mutedColor
-              wrapMode: Text.WordWrap
+              elide: Text.ElideRight
               renderType: Text.NativeRendering
             }
 
             Text {
               text: modelData.source
               font.family: root.fontFamily
-              font.pixelSize: root.fontTiny
+              font.pixelSize: root.fontSmall
               color: root.faintColor
+              elide: Text.ElideRight
               renderType: Text.NativeRendering
             }
           }
@@ -2438,13 +2557,18 @@ Panel {
         id: newsMouse
         anchors.fill: parent
         hoverEnabled: true
+        // Click to select, click again to open the preview, click a third
+        // time to open the story itself. Each click goes one step further in,
+        // so nothing throws you out to a browser by surprise.
         onClicked: {
           if (!newsRow.view) return
           root.section = newsRow.view.sectionId
-          if (root.cursorIn(newsRow.view.sectionId) === newsRow.index && newsRow.hasDetail)
-            root.toggleExpand(newsRow.view.sectionId, newsRow.index)
-          else
+          if (root.cursorIn(newsRow.view.sectionId) !== newsRow.index) {
             root.setCursorIn(newsRow.view.sectionId, newsRow.index)
+            return
+          }
+          if (newsRow.expanded || !newsRow.hasDetail) root.openStory(newsRow.modelData)
+          else root.toggleExpand(newsRow.view.sectionId, newsRow.index)
         }
       }
     }
