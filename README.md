@@ -166,6 +166,19 @@ taken as it comes rather than forced into one shape:
   summary, and it is arguably the more useful of the two: it tells you who
   else thought the story mattered.
 
+Related headlines wrap in full rather than being cut off at the width, and the
+row grows to fit them — the list scrolls, and expanding one brings it into
+view.
+
+That is everything there is. Google News carries at most five related items
+per story and no article body, and **the full text is not reachable from
+here**: its links are interstitials that resolve to the publisher in the
+browser's JavaScript, with no publisher URL anywhere in what a fetch returns,
+and MarketWatch — the one feed whose links are direct — answers `401` to
+anything but a browser. No mainstream finance feed ships `content:encoded`
+either. A panel that promised whole articles would be promising a scraper
+against a dozen paywalls.
+
 Both arrived with the item in the original fetch, so opening a story costs no
 request and reaches nowhere. Press `o`, `Enter` or `Space` on the row, or
 click a row that is already selected; `Esc` or the same key again closes it.

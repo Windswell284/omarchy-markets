@@ -1927,8 +1927,8 @@ Panel {
             // needs to know about prices or dates.
             readonly property var axis:
               Model.chartAxis(root.pageChart, root.pagePeriod, 4, 4)
-            readonly property int yAxisWidth: root.scaled(Style.space(42))
-            readonly property int xAxisHeight: root.scaled(Style.space(15))
+            readonly property int yAxisWidth: root.scaled(Style.space(52))
+            readonly property int xAxisHeight: root.scaled(Style.space(19))
 
             Item {
               id: plot
@@ -2035,12 +2035,12 @@ Panel {
 
               delegate: Text {
                 required property var modelData
-                x: plot.width + Style.space(6)
+                x: plot.width + Style.space(7)
                 y: Math.round(modelData.frac * plot.height - height / 2)
                 text: modelData.label
                 font.family: root.fontFamily
-                font.pixelSize: root.fontTiny
-                color: root.faintColor
+                font.pixelSize: root.fontSmall
+                color: root.mutedColor
                 renderType: Text.NativeRendering
               }
             }
@@ -2053,11 +2053,11 @@ Panel {
               delegate: Text {
                 required property var modelData
                 x: Math.round(modelData.frac * plot.width - width / 2)
-                y: plot.height + Style.space(3)
+                y: plot.height + Style.space(4)
                 text: modelData.label
                 font.family: root.fontFamily
-                font.pixelSize: root.fontTiny
-                color: root.faintColor
+                font.pixelSize: root.fontSmall
+                color: root.mutedColor
                 renderType: Text.NativeRendering
               }
             }
@@ -2382,7 +2382,7 @@ Panel {
           visible: (newsRow.modelData.summary || "") !== ""
           text: newsRow.modelData.summary || ""
           font.family: root.fontFamily
-          font.pixelSize: root.fontTiny
+          font.pixelSize: root.fontSmall
           color: root.mutedColor
           wrapMode: Text.WordWrap
           renderType: Text.NativeRendering
@@ -2402,18 +2402,22 @@ Panel {
         Repeater {
           model: newsRow.modelData.related || []
 
-          delegate: Row {
+          // A headline cut off at 72% of the width was the thing making an
+          // open row look like it was holding something back. It wraps now,
+          // and the row grows to fit -- the list was always free to scroll.
+          delegate: Column {
             required property var modelData
             width: detailBlock.width
-            spacing: Style.space(6)
+            spacing: Style.space(1)
+            topPadding: Style.space(2)
 
             Text {
-              width: Math.round(detailBlock.width * 0.72)
+              width: parent.width
               text: modelData.title
               font.family: root.fontFamily
-              font.pixelSize: root.fontTiny
+              font.pixelSize: root.fontSmall
               color: root.mutedColor
-              elide: Text.ElideRight
+              wrapMode: Text.WordWrap
               renderType: Text.NativeRendering
             }
 
@@ -2422,7 +2426,6 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: root.fontTiny
               color: root.faintColor
-              elide: Text.ElideRight
               renderType: Text.NativeRendering
             }
           }
