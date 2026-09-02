@@ -774,30 +774,109 @@ function parseChart(text) {
   }
 }
 
-// The block under the chart. Every value here arrived with the quote the
-// panel already fetches, so the whole page costs one chart request and
-// nothing else. Empty fields are dropped rather than shown as "--": an index
-// has no P/E, and a row of dashes is noise pretending to be data.
-function pageStats(quote) {
+// ------------------------------------------------- company financials
+
+// The statements, from the same host the charts come from and still with no
+// key. frequency=1 is the annual set, 2 the quarterly one, newest period
+// first in each. A fund or an index answers "Unsupported Asset Class" with a
+// null body, which parseFinancials reports as nothing rather than as zero.
+function financialsUrl(symbol, frequency) {
+  return "https://api.nasdaq.com/api/company/"
+       + encodeURIComponent(String(symbol || "").trim().toUpperCase())
+       + "/financials?frequency=" + (frequency === 2 ? 2 : 1)
+}
+
+// Every figure arrives as "$416,161,000" -- dollars in thousands -- or as
+// "-$1,937,000", or blank on the rows that are only headings.
+function parseMoneyThousands(text) {
+  var s = String(text === undefined || text === null ? "" : text).trim()
+  if (s === "" || s === "N/A") return NaN
+  var negative = s.charAt(0) === "-" || s.charAt(0) === "("
+  var digits = s.replace(/[^0-9.]/g, "")
+  if (digits === "") return NaN
+  var v = parseFloat(digits)
+  if (!isFinite(v)) return NaN
+  return (negative ? -v : v) * 1000
+}
+
+// Money at the scale company statements are written in, which is not the
+// scale a share price is: two significant decimals and a suffix.
+function formatBigMoney(v) {
+  if (!isFinite(v)) return ""
+  var sign = v < 0 ? "-" : ""
+  var a = Math.abs(v)
+  if (a >= 1e12) return sign + (a / 1e12).toFixed(2) + "T"
+  if (a >= 1e9) return sign + (a / 1e9).toFixed(2) + "B"
+  if (a >= 1e6) return sign + (a / 1e6).toFixed(1) + "M"
+  if (a >= 1e3) return sign + Math.round(a / 1e3) + "K"
+  return sign + String(Math.round(a))
+}
+
+// Nasdaq labels its rows in prose and repeats some of them across tables, so
+// the match is exact and ordered by preference rather than a substring hunt.
+function statementRow(table, names) {
+  var rows = (table && table.rows) || []
+  for (var n = 0; n < names.length; n++) {
+    for (var i = 0; i < rows.length; i++) {
+      if (String(rows[i].value1 || "").trim().toLowerCase() === names[n])
+        return rows[i].value2
+    }
+  }
+  return ""
+}
+
+// The newest period of one statement set. Nasdaq puts it in value2, with the
+// period it covers in the table's own header.
+function parseFinancials(text) {
+  var data = null
+  try { data = JSON.parse(text) } catch (e) { return null }
+  var d = data ? data.data : null
+  if (!d) return null
+
+  var income = d.incomeStatementTable
+  var cash = d.cashFlowTable
+  var out = {
+    period: String(((income && income.headers) || {}).value2 || ""),
+    revenue: parseMoneyThousands(statementRow(income, ["total revenue"])),
+    netIncome: parseMoneyThousands(
+      statementRow(income, ["net income", "net income-cont. operations"])),
+    opCashFlow: parseMoneyThousands(
+      statementRow(cash, ["net cash flow-operating"]))
+  }
+  if (!isFinite(out.revenue) && !isFinite(out.netIncome)
+      && !isFinite(out.opCashFlow)) return null
+  return out
+}
+
+// The block under the chart. Most of it arrived with the quote the panel
+// already fetches; the statement figures are the one part that costs its own
+// requests, and a fund that has no statements simply drops those rows.
+//
+// Empty fields are dropped rather than shown as "--": an index has no P/E,
+// and a row of dashes is noise pretending to be data.
+function pageStats(quote, financials) {
   if (!quote || !quote.valid) return []
+  var q = (financials && financials.q) || null
+  var y = (financials && financials.y) || null
+
   var pairs = [
-    { key: "Open", value: quote.open },
     { key: "Mkt cap", value: quote.marketCap },
-    { key: "High", value: quote.high },
     { key: "P/E", value: quote.pe },
-    { key: "Low", value: quote.low },
-    { key: "Fwd P/E", value: quote.forwardPe },
-    { key: "Prev close", value: quote.prevClose },
-    { key: "EPS", value: quote.eps },
     { key: "Volume", value: quote.volume },
-    { key: "Fwd EPS", value: quote.forwardEps },
+    { key: "Fwd P/E", value: quote.forwardPe },
     { key: "Avg vol", value: quote.avgVolume },
-    { key: "Div yield", value: quote.dividendYield },
+    { key: "EPS", value: quote.eps },
     { key: "52w high", value: quote.yearHigh },
-    { key: "Beta", value: quote.beta },
+    { key: "Fwd EPS", value: quote.forwardEps },
     { key: "52w low", value: quote.yearLow },
-    { key: "Revenue", value: quote.revenue }
+    { key: "Div yield", value: quote.dividendYield },
+    { key: "Revenue (TTM)", value: quote.revenue },
+    { key: "Revenue (Q)", value: q ? formatBigMoney(q.revenue) : "" },
+    { key: "Net income (Q)", value: q ? formatBigMoney(q.netIncome) : "" },
+    { key: "Net income (yr)", value: y ? formatBigMoney(y.netIncome) : "" },
+    { key: "Op cash flow (yr)", value: y ? formatBigMoney(y.opCashFlow) : "" }
   ]
+
   var out = []
   for (var i = 0; i < pairs.length; i++) {
     var v = pairs[i].value

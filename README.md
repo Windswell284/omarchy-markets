@@ -267,10 +267,24 @@ background, so the page opens with the chart already drawn instead of showing
 of rest, not one per keystroke, and a guess that does not pan out goes in the
 cache and nowhere near the screen.
 
-**The stats all came with the quote.** CNBC returns the whole fundamentals
-block whether or not anyone asks for it, so the page costs one chart request
-and nothing else. Fields the quote does not carry are dropped rather than
-shown as dashes — an index has no P/E, and an ETF has no EPS.
+**The numbers.** Market cap, volume and average volume, the 52-week range,
+P/E and forward P/E, EPS and forward EPS, dividend yield and revenue over the
+trailing twelve months all arrive with the quote CNBC is already being asked
+for, so they cost nothing.
+
+Four more come from the statements and are worth their own requests: **revenue
+and net income for the last quarter, net income for the last full year, and
+cash from operations for that year.** Those are two calls to Nasdaq's
+financials API — the quarterly set and the annual one — cached per company for
+six hours, which is generous for figures that move once a quarter. Each set
+fills in as it lands rather than waiting for the other.
+
+Open, high, low and previous close are not repeated here; they are already on
+the strip under the watchlist, for whichever row the cursor is on.
+
+Fields a company does not have are dropped rather than shown as dashes. A fund
+has no statements at all — Nasdaq answers "Unsupported Asset Class" — so those
+rows simply are not there, and an index has no P/E either.
 
 ## The bar
 
@@ -292,6 +306,7 @@ Three feeds, none of which needs an API key:
 | --- | --- |
 | Quotes | CNBC's quote service |
 | Charts | Nasdaq's chart API — intraday for 1D, daily bars for every other period |
+| Statements | Nasdaq's financials API — the quarterly and annual sets |
 | Symbol search | Nasdaq's symbol directory, downloaded and searched locally |
 | Unlisted symbols | Nasdaq's autocomplete, as a fallback |
 | Market news | MarketWatch top stories, filtered to today |

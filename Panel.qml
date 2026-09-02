@@ -645,6 +645,57 @@ Panel {
   property var chartCache: ({})
   readonly property int chartTtlMs: root.pagePeriod === "1D" ? 60000 : 900000
 
+  // ---- The statement figures. Everything else on the page came with the
+  //      quote; revenue, net income and cash from operations do not, so they
+  //      are their own two requests -- quarterly and annual -- cached per
+  //      company. Statements move once a quarter, so six hours is generous.
+  property var pageFinancials: null
+  property var financialsCache: ({})
+  property string finPendingSymbol: ""
+  readonly property int financialsTtlMs: 6 * 60 * 60 * 1000
+
+  function loadFinancials() {
+    if (!root.pageOpen) return
+    var sym = root.pageSymbol
+    var hit = root.financialsCache[sym]
+    if (hit && Date.now() - hit.at < root.financialsTtlMs) {
+      root.pageFinancials = { q: hit.q, y: hit.y }
+      return
+    }
+    root.pageFinancials = null
+    // One pair of requests at a time; a page opened while the last is still
+    // in flight is picked up when they land.
+    if (finQuarterProc.running || finYearProc.running) {
+      root.finPendingSymbol = sym
+      return
+    }
+    root.finPendingSymbol = ""
+    finQuarterProc.wantSymbol = sym
+    finQuarterProc.command = [root.fetcher, Model.financialsUrl(sym, 2)]
+    finQuarterProc.running = true
+    finYearProc.wantSymbol = sym
+    finYearProc.command = [root.fetcher, Model.financialsUrl(sym, 1)]
+    finYearProc.running = true
+  }
+
+  // Each set lands on its own, and the block fills in as they do rather than
+  // waiting for both.
+  function mergeFinancials(symbol, which, value) {
+    var cur = root.financialsCache[symbol] || { q: null, y: null, at: 0 }
+    cur[which] = value
+    cur.at = Date.now()
+    root.financialsCache[symbol] = cur
+    if (symbol !== root.pageSymbol) return
+    // Reassigned rather than mutated, so what reads it re-evaluates.
+    root.pageFinancials = { q: cur.q, y: cur.y }
+  }
+
+  function financialsSettled() {
+    if (finQuarterProc.running || finYearProc.running) return
+    if (root.finPendingSymbol === "") return
+    Qt.callLater(root.loadFinancials)
+  }
+
   function openPage(symbol) {
     var s = Model.normalizeSymbol(symbol)
     if (s === "") return
@@ -655,6 +706,7 @@ Panel {
     root.pagePeriod = "1D"
     root.pageChart = null
     root.loadChart()
+    root.loadFinancials()
     // Nothing quoted for it yet: ask, so the header is not a row of dashes.
     if (!root.quotes[s]) root.refreshQuotes()
   }
@@ -662,6 +714,7 @@ Panel {
   function closePage() {
     root.pageSymbol = ""
     root.pageChart = null
+    root.pageFinancials = null
     root.pageLoading = false
     root.pageFailed = false
   }
@@ -923,6 +976,28 @@ Panel {
       }
       if (root.adding && root.pendingQuery !== root.activeQuery) Qt.callLater(root.runSearch)
     }
+  }
+
+  Process {
+    id: finQuarterProc
+    property string wantSymbol: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.mergeFinancials(finQuarterProc.wantSymbol, "q",
+                                             Model.parseFinancials(String(text || "")))
+    }
+    onExited: root.financialsSettled()
+  }
+
+  Process {
+    id: finYearProc
+    property string wantSymbol: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.mergeFinancials(finYearProc.wantSymbol, "y",
+                                             Model.parseFinancials(String(text || "")))
+    }
+    onExited: root.financialsSettled()
   }
 
   Timer {
@@ -1781,7 +1856,8 @@ Panel {
           anchors.bottom: parent.bottom
 
           readonly property var quote: root.pageQuote
-          readonly property var stats: Model.pageStats(quotePage.quote)
+          readonly property var stats:
+            Model.pageStats(quotePage.quote, root.pageFinancials)
           // The stats are a reading surface, not a status strip: the panel's
           // smallest type at its faintest was legible only if you leaned in.
           readonly property int statRowHeight: root.scaled(Style.space(21))
