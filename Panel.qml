@@ -28,6 +28,12 @@ Panel {
   readonly property string watchlistPath: setting("watchlistFile",
     home + "/.config/omarchy/finance/watchlist.json")
   readonly property string watchlistDir: watchlistPath.replace(/\/[^\/]*$/, "")
+  // The symbol index is a cache, not a document: it sits beside the
+  // watchlist so both survive a reinstall, but nothing here expects anyone
+  // to open it, and deleting it only costs one download.
+  readonly property string symbolIndexPath: setting("symbolIndexFile",
+    home + "/.config/omarchy/finance/symbols.txt")
+  readonly property string symbolIndexDir: symbolIndexPath.replace(/\/[^\/]*$/, "")
 
   readonly property string pluginDir: {
     var here = Qt.resolvedUrl(".").toString()
@@ -366,8 +372,26 @@ Panel {
   property var searchCache: ({})
 
   // Nasdaq answers a one-character query slowest of all and least usefully,
-  // so the search does not start until there are two.
+  // so the *network* search does not start until there are two. The local
+  // index below is free and answers from the first letter.
   readonly property int minSearchChars: 2
+
+  // ---- The local symbol index: every US-listed symbol and name, ranked in
+  //      about a millisecond, which is what lets the picker keep up with
+  //      typing at all. Nasdaq's autocomplete is 1.5-3 seconds of server time
+  //      per query and no amount of debouncing hides that, so it is now only
+  //      the fallback for what the directory does not list. See Model.js.
+  property var symbolIndex: []
+  property double symbolIndexFetchedAt: 0
+  // Loaded on first open rather than at shell start: a widget nobody opens
+  // should not read half a megabyte off disk, let alone fetch two files.
+  property bool symbolIndexWanted: false
+  // Which directory file is in flight, and the rows collected so far.
+  property int symbolIndexStep: -1
+  property var symbolIndexRows: []
+  property bool symbolIndexFailed: false
+  readonly property int symbolIndexMaxAgeDays:
+    Math.max(1, setting("symbolIndexMaxAgeDays", Model.SYMBOL_INDEX_MAX_AGE_DAYS))
 
   readonly property var chosenSuggestion:
     (suggestionIndex >= 0 && suggestionIndex < suggestions.length)
@@ -375,6 +399,7 @@ Panel {
 
   function beginAdd() {
     root.adding = true
+    root.wantSymbolIndex()
     addField.text = ""
     root.suggestions = []
     root.suggestionIndex = 0
@@ -431,6 +456,54 @@ Panel {
     return Model.rankRows(root.searchCache[bestKey], q, 6)
   }
 
+  // The index covers the whole listed universe, so when it has a match there
+  // is nothing a round trip could add -- and unlike Nasdaq's reply it is
+  // neither capped at thirty rows nor padded with mutual funds, so "micro"
+  // finds Microsoft and "appl" is not led by ZAPPLX. Crypto, indexes,
+  // treasuries and OTC names are not in it and still fall through below.
+  function indexSuggestions(query) {
+    if (root.symbolIndex.length === 0) return null
+    var q = String(query || "").trim().toUpperCase()
+    if (q === "") return null
+    var hits = Model.rankRows(root.symbolIndex, q, 6)
+    return hits.length > 0 ? hits : null
+  }
+
+  // ---- Keeping the index current.
+
+  function wantSymbolIndex() {
+    // Setting this starts the FileView load; a second call only re-checks age.
+    if (!root.symbolIndexWanted) root.symbolIndexWanted = true
+    else root.maybeRefreshSymbolIndex()
+  }
+
+  function ingestSymbolIndex(text) {
+    if (!root.symbolIndexWanted) return
+    var parsed = Model.parseSymbolIndex(text)
+    if (parsed !== null) {
+      root.symbolIndex = parsed.rows
+      root.symbolIndexFetchedAt = parsed.fetchedAt
+    }
+    root.maybeRefreshSymbolIndex()
+  }
+
+  function maybeRefreshSymbolIndex() {
+    if (root.symbolIndexStep >= 0) return
+    if (!Model.symbolIndexStale(root.symbolIndexFetchedAt, Date.now(),
+                                root.symbolIndexMaxAgeDays)) return
+    root.symbolIndexRows = []
+    root.symbolIndexFailed = false
+    root.symbolIndexStep = 0
+    root.fetchSymbolDirectory()
+  }
+
+  function fetchSymbolDirectory() {
+    var step = root.symbolIndexStep
+    if (step < 0 || step >= Model.SYMBOL_DIRECTORIES.length) return
+    symbolIndexProc.command = [root.fetcher, Model.SYMBOL_DIRECTORIES[step].url]
+    symbolIndexProc.running = true
+  }
+
   function queueSearch(text) {
     var next = String(text || "").trim()
     root.pendingQuery = next
@@ -443,6 +516,18 @@ Panel {
       return
     }
     root.searchFailed = false
+
+    // The index first, and if it answers, that is the answer -- no timer, no
+    // request, no spinner.
+    var indexed = root.indexSuggestions(next)
+    if (indexed !== null) {
+      searchTimer.stop()
+      root.suggestions = indexed
+      root.suggestionIndex = 0
+      root.searching = false
+      root.searchedQuery = next
+      return
+    }
 
     // Show whatever the cache can answer right now, before deciding whether a
     // request is even needed. This is what makes typing past the first couple
@@ -482,6 +567,7 @@ Panel {
       if (root.marketNews.length === 0 || Date.now() - root.lastNewsAt > root.newsIntervalSec * 1000)
         refreshNews()
       if (Date.now() - root.lastQuoteAt > 5000) refreshQuotes()
+      root.wantSymbolIndex()
     } else {
       cancelAdd()
     }
@@ -511,7 +597,7 @@ Panel {
   Process {
     id: mkdirProc
     running: true
-    command: ["mkdir", "-p", root.watchlistDir]
+    command: ["mkdir", "-p", root.watchlistDir, root.symbolIndexDir]
   }
 
   FileView {
@@ -522,6 +608,56 @@ Panel {
     onLoaded: root.ingestWatchlist(text())
     onLoadFailed: root.ingestWatchlist(null)
     onFileChanged: reload()
+  }
+
+  FileView {
+    id: symbolIndexFile
+    // Empty until the panel is first opened; FileView starts loading as soon
+    // as it has a path.
+    path: root.symbolIndexWanted ? root.symbolIndexPath : ""
+    printErrors: false
+    onLoaded: root.ingestSymbolIndex(text())
+    // No cache yet, or one this version cannot read: fetch a fresh one.
+    onLoadFailed: root.ingestSymbolIndex(null)
+  }
+
+  // The two directory files are fetched one after the other rather than at
+  // once, because they are a single artifact: a half-built index should never
+  // reach the picker, and one Process makes "half" easy to rule out.
+  Process {
+    id: symbolIndexProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var step = root.symbolIndexStep
+        if (step < 0 || step >= Model.SYMBOL_DIRECTORIES.length) return
+        var rows = Model.parseSymbolDirectory(String(text || ""),
+                                              Model.SYMBOL_DIRECTORIES[step])
+        if (rows.length === 0) root.symbolIndexFailed = true
+        else root.symbolIndexRows = root.symbolIndexRows.concat(rows)
+      }
+    }
+    onExited: function(code, status) {
+      if (code !== 0) root.symbolIndexFailed = true
+
+      var next = root.symbolIndexStep + 1
+      if (!root.symbolIndexFailed && next < Model.SYMBOL_DIRECTORIES.length) {
+        root.symbolIndexStep = next
+        Qt.callLater(root.fetchSymbolDirectory)
+        return
+      }
+      root.symbolIndexStep = -1
+
+      // A failed or partial download leaves whatever was already on disk in
+      // place. A stale index still answers; half an index answers wrongly.
+      if (!root.symbolIndexFailed && root.symbolIndexRows.length > 0) {
+        root.symbolIndex = root.symbolIndexRows
+        root.symbolIndexFetchedAt = Date.now()
+        symbolIndexFile.setText(
+          Model.serializeSymbolIndex(root.symbolIndex, root.symbolIndexFetchedAt))
+      }
+      root.symbolIndexRows = []
+    }
   }
 
   Process {

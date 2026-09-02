@@ -520,3 +520,108 @@ function rankRows(rows, query, limit) {
 function parseSearch(text, query, limit) {
   return rankRows(parseSearchRows(text), query, limit)
 }
+
+// ------------------------------------------------------- symbol index
+
+// Nasdaq's autocomplete costs one and a half to three seconds per query, and
+// measuring it shows the time is all server: connection setup is around 50ms
+// and time-to-first-byte is the rest. Nothing local fixes that, so the search
+// does not use it. The same exchange publishes its whole symbol directory as
+// two static files that together download in well under a second, and ranking
+// 13,000 rows of it locally costs about a millisecond -- so the files are the
+// search, and the autocomplete stays only as a fallback for what they omit
+// (crypto, indexes, treasuries, OTC and foreign listings).
+//
+// Both files are pipe-delimited, carry a header row and a "File Creation
+// Time" trailer, and do not agree on column order -- hence a layout each.
+var SYMBOL_DIRECTORIES = [
+  { url: "https://www.nasdaqtrader.com/dynamic/symdir/nasdaqlisted.txt",
+    symbol: 0, name: 1, etf: 6, test: 3 },
+  { url: "https://www.nasdaqtrader.com/dynamic/symdir/otherlisted.txt",
+    symbol: 0, name: 1, etf: 4, test: 6 }
+]
+
+// Nasdaq rebuilds these every trading day, but a week-old copy is wrong only
+// about listings younger than a week, and those fall through to the
+// autocomplete fallback anyway. Refreshing daily would buy nothing.
+var SYMBOL_INDEX_MAX_AGE_DAYS = 7
+
+// Rows come out in the shape parseSearchRows produces, so rankRows, scoreMatch
+// and the picker cannot tell the two sources apart.
+//
+// `rawName` is the *short* name uppercased rather than the legal one. The
+// directory files spell every row "... - Common Stock", and matching a query
+// against that boilerplate means typing "common" ranks the entire exchange.
+function parseSymbolDirectory(text, layout) {
+  if (!text || !layout) return []
+  var lines = String(text).split("\n")
+  var out = []
+  for (var i = 1; i < lines.length; i++) {
+    var line = lines[i]
+    if (line === "" || line.indexOf("File Creation Time") === 0) continue
+    var f = line.split("|")
+    if (f.length < 5) continue
+    // Test issues are exchange plumbing, not securities anyone can hold.
+    if (f[layout.test] === "Y") continue
+    var symbol = String(f[layout.symbol] || "").trim().toUpperCase()
+    var name = String(f[layout.name] || "").trim()
+    if (symbol === "" || name === "") continue
+    var short = shortCompanyName(name)
+    out.push({
+      symbol: symbol,
+      name: short,
+      rawName: short.toUpperCase(),
+      asset: f[layout.etf] === "Y" ? "ETF" : "STOCKS",
+      exchange: ""
+    })
+  }
+  return out
+}
+
+// The cache is written as our own three-column TSV rather than the raw
+// downloads: it is a third the size, needs no column layouts to read back,
+// and re-parsing it on every shell start is a split rather than a scan.
+var SYMBOL_INDEX_HEADER = "#pyang.finance symbol index v1"
+
+function serializeSymbolIndex(rows, fetchedAtMs) {
+  var lines = [SYMBOL_INDEX_HEADER, "#fetched " + Math.round(fetchedAtMs || 0)]
+  for (var i = 0; i < rows.length; i++) {
+    var r = rows[i]
+    lines.push(r.symbol + "\t" + r.name + "\t" + r.asset)
+  }
+  return lines.join("\n") + "\n"
+}
+
+// Returns null for anything this version cannot read, which the panel treats
+// as "no index yet" and refetches -- a cache from a future format should not
+// be able to break the picker.
+function parseSymbolIndex(text) {
+  if (!text) return null
+  var lines = String(text).split("\n")
+  if (lines[0] !== SYMBOL_INDEX_HEADER) return null
+  var fetchedAt = 0
+  var rows = []
+  for (var i = 1; i < lines.length; i++) {
+    var line = lines[i]
+    if (line === "") continue
+    if (line.indexOf("#fetched ") === 0) {
+      fetchedAt = parseInt(line.slice(9), 10) || 0
+      continue
+    }
+    if (line.charAt(0) === "#") continue
+    var f = line.split("\t")
+    if (f.length < 3) continue
+    rows.push({
+      symbol: f[0], name: f[1], rawName: f[1].toUpperCase(),
+      asset: f[2], exchange: ""
+    })
+  }
+  if (rows.length === 0) return null
+  return { fetchedAt: fetchedAt, rows: rows }
+}
+
+function symbolIndexStale(fetchedAtMs, nowMs, maxAgeDays) {
+  var days = maxAgeDays === undefined ? SYMBOL_INDEX_MAX_AGE_DAYS : maxAgeDays
+  if (!fetchedAtMs) return true
+  return (nowMs - fetchedAtMs) > days * 24 * 60 * 60 * 1000
+}

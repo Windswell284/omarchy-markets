@@ -66,37 +66,53 @@ goes straight in without waiting for the search.
 | `omarchy-shell pyang.finance add NVDA` | from a script or a key |
 | Edit `watchlist.json` | for a bulk change |
 
-Search is Nasdaq's autocomplete, which answers on partial symbols and on
-company names and needs no key. It is also **slow** — 1.5 to 3 seconds of
-server time per query, none of it connection overhead — which is far too slow
-to sit behind a keystroke. Two things hide that:
+Search runs **locally**, against every symbol listed on a US exchange. The
+picker answers in about a millisecond, from the first letter, offline.
 
-- **Nothing is searched until the second character.** A one-character query is
-  both the slowest Nasdaq answers and the least useful.
-- **Every result set is cached under the query that fetched it**, and a longer
-  query whose prefix is cached is answered from it instantly, re-ranked
-  locally, while the network catches up. So `nvid` waits once and `nvidi`,
-  `nvidia` come back immediately.
+That is a deliberate move away from an autocomplete API. Nasdaq publishes one,
+it needs no key, and it answers partial symbols and company names — but it
+takes **1.5 to 3 seconds per query**, and measuring it shows the time is all
+server: connection setup is about 50ms and time-to-first-byte is the rest.
+Nothing local hides a delay like that behind a keystroke.
+
+The same exchange also publishes its entire symbol directory as two static
+files, and *those* are fast — together they download in well under a second,
+which is less than one autocomplete query costs. So the files are the search:
+
+```
+~/.config/omarchy/finance/symbols.txt      13,000 symbols, ~560KB
+```
+
+Fetched on first use, refreshed weekly in the background, and kept as a
+compact three-column cache. A stale copy still answers, so a refresh never
+makes you wait and a failed one is invisible. Delete the file and it is
+rebuilt.
+
+The autocomplete is still there, as a **fallback** for anything the directory
+does not list — crypto, indexes, treasuries, OTC and foreign names. That path
+keeps the old behaviour: nothing is searched until the second character, every
+result set is cached under the query that fetched it, and a longer query whose
+prefix is cached is answered from it instantly.
 
 The box always says which of those it is doing — "Keep typing…", "Searching…",
 "No matches for X", or "Search unavailable" — because a picker that just sits
 there empty is indistinguishable from a broken one.
 
-It ranks its own results close to
-alphabetically and truncates, which buries the obvious answer — searching
-`appl` puts a mutual fund called ZAPPLX above Apple, along with four different
-"Applied ..." companies — so the results are re-ranked here: real companies
-above funds, a matched symbol above a matched name, and, among name matches,
-whichever company's first word the query covers most of. That last rule is
-what puts Apple above Applied Industrial Technologies for `appl`.
+Results are ranked here rather than taken in the order they arrive: real
+companies above funds, a matched symbol above a matched name, and, among name
+matches, whichever company's first word the query covers most of. That last
+rule is what puts Apple above Applied Industrial Technologies for `appl`.
 
 ETFs and mutual funds are kept in the list, because people hold them, but
 badged — a 2x leveraged tracker named after a company is otherwise
 indistinguishable from the company.
 
-One limit worth knowing: Nasdaq caps its reply at about thirty matches and
-picks them alphabetically, so a short query can miss a big name entirely.
-`micro` does not find Microsoft; `microsoft` finds it first.
+Two things that used to be limits are worth noting as gone. Nasdaq's
+autocomplete caps its reply at about thirty matches and picks them
+alphabetically, so `micro` did not find Microsoft — a local index has no cap,
+and it does. It also returns mutual funds, which buried the obvious answer:
+`appl` led with a fund called ZAPPLX. The directory files are exchange-listed
+securities only, so that noise is simply absent.
 
 Case does not matter, and a handful of names are understood as well as
 symbols: `spx`, `nasdaq`, `djia`, `vix`, `russell`, `btc`, `eth`, `10y` and
@@ -180,7 +196,8 @@ Three feeds, none of which needs an API key:
 | | Source |
 | --- | --- |
 | Quotes | CNBC's quote service |
-| Symbol search | Nasdaq's autocomplete |
+| Symbol search | Nasdaq's symbol directory, downloaded and searched locally |
+| Unlisted symbols | Nasdaq's autocomplete, as a fallback |
 | Market news | MarketWatch top stories, filtered to today |
 | Business news | Google News, Business section |
 
@@ -243,6 +260,8 @@ All optional, all per-entry in `~/.config/omarchy/shell.json`. Find the
 | `refreshIntervalSec` | `30` | Quote poll while the panel is open |
 | `newsIntervalSec` | `600` | News poll |
 | `watchlistFile` | `~/.config/omarchy/finance/watchlist.json` | |
+| `symbolIndexFile` | `~/.config/omarchy/finance/symbols.txt` | The local search index |
+| `symbolIndexMaxAgeDays` | `7` | How old the index may get before a refresh |
 | `marketNewsUrl` | MarketWatch top stories | Any RSS feed |
 | `businessNewsUrl` | Google News Business | Any RSS feed |
 | `marketNewsTodayOnly` | `true` | Drop market stories not filed today |
@@ -265,7 +284,9 @@ Quotes poll every 30 seconds while the panel is open and at most once a minute
 while it is shut, back off to five minutes once the market has closed, and
 back off exponentially after a failed request. News is fetched lazily — a panel
 you never open does not pull two RSS feeds all day — and then every ten
-minutes while it is on screen.
+minutes while it is on screen. The symbol index is lazier still: it is read
+from disk the first time the panel opens, and re-downloaded only when it is
+more than a week old.
 
 ## Keybindings
 
