@@ -204,17 +204,37 @@ Panel {
     refreshNews()
   }
 
-  function moveTicker(index, delta) {
-    var target = index + delta
-    if (index < 0 || index >= root.tickers.length) return
-    if (target < 0 || target >= root.tickers.length) return
+  // Take one ticker out and put it back somewhere else. A splice rather than
+  // a swap: a row dragged three places down should slide the three it passes
+  // up by one, not trade places with whichever it lands on. For a single step
+  // the two are the same thing, so [ and ] are unchanged.
+  function reorderTicker(from, to) {
+    if (from < 0 || from >= root.tickers.length) return
+    var target = Math.max(0, Math.min(to, root.tickers.length - 1))
+    if (target === from) return
     var next = root.tickers.slice()
-    var held = next[index]
-    next[index] = next[target]
-    next[target] = held
+    next.splice(target, 0, next.splice(from, 1)[0])
     root.tickers = next
     root.wlCursor = target
     saveWatchlist()
+  }
+
+  function moveTicker(index, delta) {
+    root.reorderTicker(index, index + delta)
+  }
+
+  // ---- Dragging a row to reorder. The list is only rewritten on release:
+  //      the delegates belong to the ListView and rewriting the model under a
+  //      press destroys the very MouseArea holding it, which ends the drag
+  //      halfway. So the drag moves a marker, and the drop moves the ticker.
+  property int dragFrom: -1
+  property int dragTo: -1
+  readonly property bool dragging: dragFrom >= 0 && dragTo >= 0 && dragTo !== dragFrom
+
+  function endDrag(commit) {
+    if (commit && root.dragging) root.reorderTicker(root.dragFrom, root.dragTo)
+    root.dragFrom = -1
+    root.dragTo = -1
   }
 
   function clampCursors() {
@@ -355,7 +375,11 @@ Panel {
     // stale open row is never left behind somewhere off screen.
     if (root.detailOpen && (root.expandedSection !== which || root.expandedIndex !== next))
       root.collapseDetail()
-    if (which === 0) { root.wlCursor = next; watchlistView.positionViewAtIndex(next, ListView.Contain) }
+    if (which === 0) {
+      root.wlCursor = next
+      watchlistView.positionViewAtIndex(next, ListView.Contain)
+      root.queuePrefetch(root.tickers[next])
+    }
     else if (which === 1) { root.mnCursor = next; marketNewsView.positionViewAtIndex(next, ListView.Contain) }
     else { root.bizCursor = next; businessNewsView.positionViewAtIndex(next, ListView.Contain) }
   }
@@ -673,6 +697,34 @@ Panel {
     chartProc.running = true
   }
 
+  // ---- Fetching a chart before it is asked for. A chart is one to three
+  //      seconds away, all of it Nasdaq's, so the only way a page opens
+  //      quickly is for its chart to already be here. Resting on a row --
+  //      with the pointer or with the cursor -- is a good enough signal of
+  //      what is about to be opened, and costs one request rather than one
+  //      per keystroke.
+  property string prefetchSymbol: ""
+
+  function queuePrefetch(symbol) {
+    var s = Model.normalizeSymbol(symbol)
+    if (s === "" || s === root.pageSymbol) return
+    var hit = root.chartCache[s + "|1D"]
+    if (hit && Date.now() - hit.at < 60000) return
+    root.prefetchSymbol = s
+    prefetchTimer.restart()
+  }
+
+  function runPrefetch() {
+    var s = root.prefetchSymbol
+    if (s === "" || prefetchProc.running || chartProc.running) return
+    var hit = root.chartCache[s + "|1D"]
+    if (hit && Date.now() - hit.at < 60000) return
+    prefetchProc.wantSymbol = s
+    prefetchProc.command = [root.fetcher,
+      Model.chartUrl(s, "1D", root.chartAssetOf(s), Date.now())]
+    prefetchProc.running = true
+  }
+
   // ---------------------------------------------------------------- wiring
 
   onOpenedChanged: {
@@ -684,6 +736,13 @@ Panel {
         refreshNews()
       if (Date.now() - root.lastQuoteAt > 5000) refreshQuotes()
       root.wantSymbolIndex()
+      // A page stays open across a close, so that reopening the panel comes
+      // back to what was being read. Its chart does not get to stay stale
+      // for it: this re-asks, and the cache answers unless 1D has expired.
+      if (root.pageOpen) root.loadChart()
+      // Whatever the cursor is on is the likeliest first click.
+      else if (root.wlCursor >= 0 && root.wlCursor < root.tickers.length)
+        root.queuePrefetch(root.tickers[root.wlCursor])
     } else {
       cancelAdd()
     }
@@ -846,6 +905,28 @@ Panel {
         root.searching = false
       }
       if (root.adding && root.pendingQuery !== root.activeQuery) Qt.callLater(root.runSearch)
+    }
+  }
+
+  Timer {
+    id: prefetchTimer
+    interval: 350
+    onTriggered: root.runPrefetch()
+  }
+
+  Process {
+    id: prefetchProc
+    property string wantSymbol: ""
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var chart = Model.parseChart(String(text || ""))
+        // Cache or nothing. A guess that did not pan out must not put an
+        // error on screen: the reader never asked for this.
+        if (chart !== null)
+          root.chartCache[prefetchProc.wantSymbol + "|1D"] =
+            { chart: chart, at: Date.now() }
+      }
     }
   }
 
@@ -1154,6 +1235,9 @@ Panel {
             // moving while a page stays open, and a list with no sign of
             // which row the right-hand side belongs to is a puzzle.
             readonly property bool paged: root.pageSymbol === quoteRow.modelData
+            // The row being carried, faded so the marker below reads as
+            // where it is going rather than as a second row.
+            opacity: root.dragging && root.dragFrom === quoteRow.index ? 0.4 : 1
             readonly property bool hot: rowMouse.containsMouse
 
             Rectangle {
@@ -1237,13 +1321,64 @@ Panel {
               anchors.fill: parent
               hoverEnabled: true
               acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+
+              // Resting the pointer on a row is a good guess at what is about
+              // to be clicked, and a chart fetched now is a page that opens
+              // at once instead of in two seconds.
+              onEntered: root.queuePrefetch(quoteRow.modelData)
+
+              property real pressY: 0
+              // A press that has travelled far enough to be a drag rather
+              // than a click. Below the threshold a shaky hand still opens
+              // the page it aimed at.
+              property bool moved: false
+
+              onPressed: function(mouse) {
+                if (mouse.button !== Qt.LeftButton) return
+                rowMouse.pressY = mouse.y
+                rowMouse.moved = false
+                root.dragFrom = quoteRow.index
+                root.dragTo = quoteRow.index
+              }
+
+              onPositionChanged: function(mouse) {
+                if (root.dragFrom < 0) return
+                if (!rowMouse.moved
+                    && Math.abs(mouse.y - rowMouse.pressY) < Style.space(6)) return
+                rowMouse.moved = true
+                var listY = rowMouse.mapToItem(watchlistView.contentItem, 0, mouse.y).y
+                var slot = Math.floor(listY / root.quoteRowHeight)
+                root.dragTo = Math.max(0, Math.min(slot, root.tickers.length - 1))
+              }
+
+              onReleased: root.endDrag(true)
+              onCanceled: root.endDrag(false)
+
               onClicked: function(mouse) {
+                // A drag ends in a click too, and a drag is not a request to
+                // open whatever it was dropped on.
+                if (rowMouse.moved) return
                 root.section = 0
                 root.wlCursor = quoteRow.index
                 if (mouse.button === Qt.MiddleButton) root.removeTicker(quoteRow.index)
                 else root.openPage(quoteRow.modelData)
               }
             }
+          }
+
+          // Where a dragged row will land. The list does not move until the
+          // drop, so without this a drag has nothing to show for itself.
+          Rectangle {
+            visible: root.dragging
+            z: 2
+            width: watchlistView.width - Style.space(2)
+            height: Math.max(1, Style.space(2))
+            radius: height / 2
+            color: Util.alpha(root.fg, 0.7)
+            // Below the target when moving down, above it when moving up --
+            // the gap the row is actually going into.
+            y: (root.dragTo > root.dragFrom ? root.dragTo + 1 : root.dragTo)
+               * root.quoteRowHeight - Math.round(height / 2)
           }
 
           // An empty watchlist is a state worth naming rather than a blank box.
@@ -1629,7 +1764,9 @@ Panel {
 
           readonly property var quote: root.pageQuote
           readonly property var stats: Model.pageStats(quotePage.quote)
-          readonly property int statRowHeight: root.scaled(Style.space(17))
+          // The stats are a reading surface, not a status strip: the panel's
+          // smallest type at its faintest was legible only if you leaned in.
+          readonly property int statRowHeight: root.scaled(Style.space(21))
 
           // --- the company and what it costs right now
 
@@ -1775,7 +1912,7 @@ Panel {
             }
           }
 
-          // --- the chart
+          // --- the chart, with an axis on each side of it
 
           Item {
             id: chartArea
@@ -1786,124 +1923,154 @@ Panel {
             anchors.bottom: statsBlock.top
             anchors.bottomMargin: Style.space(8)
 
-            Canvas {
-              id: chartCanvas
-              anchors.fill: parent
-              anchors.rightMargin: highLabel.implicitWidth + Style.space(8)
-              renderStrategy: Canvas.Cooperative
-              opacity: root.pageLoading && root.pageChart !== null ? 0.45 : 1
+            // Both axes come back as fractions of the plot, so nothing here
+            // needs to know about prices or dates.
+            readonly property var axis:
+              Model.chartAxis(root.pageChart, root.pagePeriod, 4, 4)
+            readonly property int yAxisWidth: root.scaled(Style.space(42))
+            readonly property int xAxisHeight: root.scaled(Style.space(15))
 
-              // Canvas does not repaint on its own when what it draws from
-              // changes, and every one of these changes what it draws.
-              property var series: root.pageChart
-              property color lineColor: !root.pageChart ? root.mutedColor
-                : (root.pageChart.up ? root.upColor
-                  : (root.pageChart.down ? root.downColor : root.mutedColor))
-              onSeriesChanged: requestPaint()
-              onLineColorChanged: requestPaint()
-              onWidthChanged: requestPaint()
-              onHeightChanged: requestPaint()
+            Item {
+              id: plot
+              anchors.left: parent.left
+              anchors.top: parent.top
+              anchors.right: parent.right
+              anchors.rightMargin: chartArea.yAxisWidth
+              anchors.bottom: parent.bottom
+              anchors.bottomMargin: chartArea.xAxisHeight
 
-              onPaint: {
-                var ctx = getContext("2d")
-                ctx.reset()
-                var c = chartCanvas.series
-                if (!c || !c.points || c.points.length < 2) return
+              Canvas {
+                id: chartCanvas
+                anchors.fill: parent
+                renderStrategy: Canvas.Cooperative
+                opacity: root.pageLoading && root.pageChart !== null ? 0.45 : 1
 
-                var w = width, h = height, pad = Math.max(2, Style.space(2))
-                var min = c.min, max = c.max
+                // Canvas does not repaint on its own when what it draws from
+                // changes, and every one of these changes what it draws.
+                property var series: root.pageChart
+                property var gridline: chartArea.axis.y
+                property color lineColor: !root.pageChart ? root.mutedColor
+                  : (root.pageChart.up ? root.upColor
+                    : (root.pageChart.down ? root.downColor : root.mutedColor))
+                onSeriesChanged: requestPaint()
+                onGridlineChanged: requestPaint()
+                onLineColorChanged: requestPaint()
+                onWidthChanged: requestPaint()
+                onHeightChanged: requestPaint()
 
-                // The intraday chart is read against yesterday's close, so
-                // that line has to be inside the range or it is drawn off the
-                // top of the canvas on a gap day.
-                var base = root.pagePeriod === "1D" && isFinite(c.previousClose)
-                           && c.previousClose > 0 ? c.previousClose : NaN
-                if (isFinite(base)) { min = Math.min(min, base); max = Math.max(max, base) }
+                onPaint: {
+                  var ctx = getContext("2d")
+                  ctx.reset()
+                  var c = chartCanvas.series
+                  if (!c || !c.points || c.points.length < 2) return
 
-                var span = max - min
-                if (span <= 0) span = Math.abs(max) * 0.01 || 1
-                // Headroom, so the line never runs along the very edge.
-                min -= span * 0.08; max += span * 0.08; span = max - min
+                  var w = width, h = height, pad = Math.max(2, Style.space(2))
+                  // The same range the axis labels were computed from, so a
+                  // gridline lands exactly on the number beside it.
+                  var range = Model.chartRange(c, root.pagePeriod)
+                  var n = c.points.length
+                  function px(i) { return pad + (w - 2 * pad) * (i / (n - 1)) }
+                  function py(v) {
+                    return h - pad - (h - 2 * pad) * ((v - range.min) / range.span)
+                  }
 
-                var n = c.points.length
-                function px(i) { return pad + (w - 2 * pad) * (i / (n - 1)) }
-                function py(v) { return h - pad - (h - 2 * pad) * ((v - min) / span) }
+                  var col = chartCanvas.lineColor
 
-                var col = chartCanvas.lineColor
-
-                if (isFinite(base)) {
-                  ctx.save()
-                  ctx.strokeStyle = Qt.rgba(col.r, col.g, col.b, 0.35)
+                  // Gridlines first, so the line is drawn over them.
+                  var grid = chartCanvas.gridline || []
+                  ctx.strokeStyle = Qt.rgba(root.fg.r, root.fg.g, root.fg.b, 0.08)
                   ctx.lineWidth = 1
-                  if (ctx.setLineDash) ctx.setLineDash([3, 3])
+                  for (var g = 0; g < grid.length; g++) {
+                    var gy = Math.round(py(grid[g].value)) + 0.5
+                    ctx.beginPath()
+                    ctx.moveTo(0, gy)
+                    ctx.lineTo(w, gy)
+                    ctx.stroke()
+                  }
+
+                  // Yesterday's close, on the intraday chart only: over a
+                  // month the opening price is a date, not a reference.
+                  if (isFinite(range.base)) {
+                    ctx.save()
+                    ctx.strokeStyle = Qt.rgba(col.r, col.g, col.b, 0.45)
+                    ctx.lineWidth = 1
+                    if (ctx.setLineDash) ctx.setLineDash([3, 3])
+                    ctx.beginPath()
+                    ctx.moveTo(0, py(range.base))
+                    ctx.lineTo(w, py(range.base))
+                    ctx.stroke()
+                    ctx.restore()
+                  }
+
+                  // The fill closes the line's own path down to the floor, so
+                  // the area and the line can never disagree about the shape.
                   ctx.beginPath()
-                  ctx.moveTo(pad, py(base))
-                  ctx.lineTo(w - pad, py(base))
-                  ctx.stroke()
+                  ctx.moveTo(px(0), py(c.points[0].v))
+                  for (var i = 1; i < n; i++) ctx.lineTo(px(i), py(c.points[i].v))
+                  ctx.save()
+                  ctx.lineTo(px(n - 1), h)
+                  ctx.lineTo(px(0), h)
+                  ctx.closePath()
+                  var grad = ctx.createLinearGradient(0, 0, 0, h)
+                  grad.addColorStop(0, Qt.rgba(col.r, col.g, col.b, 0.20))
+                  grad.addColorStop(1, Qt.rgba(col.r, col.g, col.b, 0.0))
+                  ctx.fillStyle = grad
+                  ctx.fill()
                   ctx.restore()
+
+                  ctx.beginPath()
+                  ctx.moveTo(px(0), py(c.points[0].v))
+                  for (var j = 1; j < n; j++) ctx.lineTo(px(j), py(c.points[j].v))
+                  ctx.strokeStyle = col
+                  ctx.lineWidth = Math.max(1, Style.space(1.5))
+                  ctx.lineJoin = "round"
+                  ctx.stroke()
                 }
-
-                ctx.beginPath()
-                ctx.moveTo(px(0), py(c.points[0].v))
-                for (var i = 1; i < n; i++) ctx.lineTo(px(i), py(c.points[i].v))
-
-                // The fill closes the same path down to the floor, so the
-                // area and the line can never disagree about the shape.
-                ctx.save()
-                ctx.lineTo(px(n - 1), h)
-                ctx.lineTo(px(0), h)
-                ctx.closePath()
-                var grad = ctx.createLinearGradient(0, 0, 0, h)
-                grad.addColorStop(0, Qt.rgba(col.r, col.g, col.b, 0.20))
-                grad.addColorStop(1, Qt.rgba(col.r, col.g, col.b, 0.0))
-                ctx.fillStyle = grad
-                ctx.fill()
-                ctx.restore()
-
-                ctx.beginPath()
-                ctx.moveTo(px(0), py(c.points[0].v))
-                for (var j = 1; j < n; j++) ctx.lineTo(px(j), py(c.points[j].v))
-                ctx.strokeStyle = col
-                ctx.lineWidth = Math.max(1, Style.space(1.5))
-                ctx.lineJoin = "round"
-                ctx.stroke()
               }
             }
 
-            // The range, as two labels rather than an axis. A gridded axis
-            // costs a third of the width to say what two numbers say.
-            Text {
-              id: highLabel
-              anchors.right: parent.right
-              anchors.top: parent.top
-              visible: root.pageChart !== null
-              text: root.pageChart ? Model.formatPrice(root.pageChart.max) : ""
-              font.family: root.fontFamily
-              font.pixelSize: root.fontTiny
-              color: root.faintColor
-              renderType: Text.NativeRendering
+            // Prices, against the gridlines they belong to.
+            Repeater {
+              model: root.pageChart !== null ? chartArea.axis.y : []
+
+              delegate: Text {
+                required property var modelData
+                x: plot.width + Style.space(6)
+                y: Math.round(modelData.frac * plot.height - height / 2)
+                text: modelData.label
+                font.family: root.fontFamily
+                font.pixelSize: root.fontTiny
+                color: root.faintColor
+                renderType: Text.NativeRendering
+              }
             }
 
-            Text {
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              visible: root.pageChart !== null
-              text: root.pageChart ? Model.formatPrice(root.pageChart.min) : ""
-              font.family: root.fontFamily
-              font.pixelSize: root.fontTiny
-              color: root.faintColor
-              renderType: Text.NativeRendering
+            // Times on 1D, dates on the rest, taken from the feed's own
+            // labels rather than from its timestamps -- see parseChart.
+            Repeater {
+              model: root.pageChart !== null ? chartArea.axis.x : []
+
+              delegate: Text {
+                required property var modelData
+                x: Math.round(modelData.frac * plot.width - width / 2)
+                y: plot.height + Style.space(3)
+                text: modelData.label
+                font.family: root.fontFamily
+                font.pixelSize: root.fontTiny
+                color: root.faintColor
+                renderType: Text.NativeRendering
+              }
             }
 
             // Loading and failure are named, for the same reason the ticker
             // picker names them: an empty chart area and a broken one look
             // exactly alike.
             Text {
-              anchors.centerIn: parent
+              anchors.centerIn: plot
               visible: root.pageChart === null
               text: root.pageFailed ? "No chart for this symbol" : "Loading chart…"
               font.family: root.fontFamily
-              font.pixelSize: root.fontTiny
+              font.pixelSize: root.fontSmall
               color: root.faintColor
               renderType: Text.NativeRendering
             }
@@ -1952,19 +2119,31 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     text: modelData.key
                     font.family: root.fontFamily
-                    font.pixelSize: root.fontTiny
-                    color: root.faintColor
+                    font.pixelSize: root.fontSmall
+                    color: root.mutedColor
                     renderType: Text.NativeRendering
                   }
 
+                  // The value carries the full foreground. A label can afford
+                  // to recede; the number it labels is the thing being read.
                   Text {
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
                     text: modelData.value
                     font.family: root.fontFamily
-                    font.pixelSize: root.fontTiny
-                    color: root.mutedColor
+                    font.pixelSize: root.fontSmall
+                    color: root.fg
                     renderType: Text.NativeRendering
+                  }
+
+                  // A hairline under each row, so the eye can cross a wide
+                  // gap from label to number without losing the line.
+                  Rectangle {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    height: Math.max(1, Style.space(1))
+                    color: Util.alpha(root.fg, 0.05)
                   }
                 }
               }

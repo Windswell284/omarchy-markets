@@ -740,7 +740,13 @@ function parseChart(text) {
     var v = toNumber(rows[i].y)
     if (!isFinite(v)) continue
     var t = Number(rows[i].x)
-    points.push({ t: isFinite(t) ? t : i, v: v })
+    // Nasdaq's `x` is exchange wall-clock dressed as an epoch -- 4:00 AM ET
+    // comes through as 04:00 UTC -- so converting it to local time moves
+    // every intraday chart by the reader's offset. The label the feed already
+    // wrote is correct and is what the axis uses.
+    points.push({ t: isFinite(t) ? t : i,
+                  v: v,
+                  label: String((rows[i].z && rows[i].z.dateTime) || "") })
     if (v < min) min = v
     if (v > max) max = v
   }
@@ -797,6 +803,112 @@ function pageStats(quote) {
     var v = pairs[i].value
     if (v === undefined || v === null || String(v).trim() === "") continue
     out.push({ key: pairs[i].key, value: String(v) })
+  }
+  return out
+}
+
+// ------------------------------------------------------------------ axes
+
+// The drawn range, which is wider than the data: a line that touches the top
+// of its box reads as clipped. Shared by the canvas and the axis labels,
+// because a gridline that does not sit exactly on its own number is worse
+// than no gridline.
+function chartRange(chart, periodKey) {
+  if (!chart) return null
+  var min = chart.min, max = chart.max
+  var base = periodKey === "1D" && isFinite(chart.previousClose)
+             && chart.previousClose > 0 ? chart.previousClose : NaN
+  if (isFinite(base)) { min = Math.min(min, base); max = Math.max(max, base) }
+  var span = max - min
+  if (span <= 0) span = Math.abs(max) * 0.01 || 1
+  min -= span * 0.08
+  max += span * 0.08
+  return { min: min, max: max, span: max - min, base: base }
+}
+
+// Round numbers inside a range: steps of 1, 2 or 5 times a power of ten, so
+// the axis reads 320, 325, 330 rather than 321.4, 326.1, 330.8.
+function niceTicks(min, max, count) {
+  var span = max - min
+  if (!(span > 0)) return []
+  var raw = span / Math.max(1, count)
+  var mag = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10))
+  // Every round step near the ideal one, judged by how close it comes to the
+  // number of lines asked for. Taking the first step that is merely >= raw
+  // rounds up every time and leaves a four-line axis showing two.
+  var candidates = [0.5, 1, 2, 2.5, 5, 10]
+  var step = mag
+  var best = Infinity
+  for (var ci = 0; ci < candidates.length; ci++) {
+    var s2 = candidates[ci] * mag
+    var lines = Math.floor(max / s2) - Math.ceil(min / s2) + 1
+    var miss = Math.abs(lines - count)
+    if (lines >= 2 && miss < best) { best = miss; step = s2 }
+  }
+  var out = []
+  var first = Math.ceil(min / step) * step
+  for (var v = first; v <= max + step * 0.0001; v += step) {
+    // Re-rounded because repeated addition of a decimal step drifts, and an
+    // axis labelled 325.00000000000006 is its own bug report.
+    out.push(Math.round(v / step) * step)
+  }
+  return out
+}
+
+// Times on 1D, dates elsewhere, and years once the span is long enough that
+// the day of the month is noise.
+function axisLabel(label, periodKey) {
+  var s = String(label || "")
+  if (periodKey === "1D") return s.replace(/\s*ET\s*$/, "")
+  var m = s.match(/^(\d+)\/(\d+)\/(\d{4})$/)
+  if (!m) return s
+  if (periodKey === "5Y" || periodKey === "MAX") return m[1] + "/" + m[3].slice(2)
+  return m[1] + "/" + m[2]
+}
+
+// Both axes as fractions of the plot, so the panel can position labels
+// without knowing anything about prices or dates.
+//
+// `frac` runs 0..1 left to right on x, and top to bottom on y.
+function chartAxis(chart, periodKey, yCount, xCount) {
+  var out = { x: [], y: [] }
+  if (!chart || !chart.points || chart.points.length < 2) return out
+
+  var range = chartRange(chart, periodKey)
+  var ticks = niceTicks(range.min, range.max, yCount === undefined ? 4 : yCount)
+  for (var i = 0; i < ticks.length; i++) {
+    out.y.push({
+      value: ticks[i],
+      frac: (range.max - ticks[i]) / range.span,
+      label: formatPrice(ticks[i])
+    })
+  }
+
+  var n = chart.points.length
+  var want = xCount === undefined ? 4 : xCount
+  for (var j = 0; j < want; j++) {
+    // Inset from both ends: a label centred on the first point hangs off the
+    // left edge, and one on the last collides with the y axis.
+    var frac = (j + 0.5) / want
+    var index = Math.min(n - 1, Math.max(0, Math.round(frac * (n - 1))))
+    // On an intraday axis, land on a round time if one is close: "4:59 AM"
+    // between two neatly spaced neighbours reads as a glitch rather than as
+    // the sample it is.
+    if (periodKey === "1D") {
+      var reach = Math.max(1, Math.round(n * 0.04))
+      for (var step2 = 0; step2 <= reach; step2++) {
+        var hit = -1
+        if (/:(00|30)\b/.test(chart.points[Math.max(0, index - step2)].label)) hit = index - step2
+        else if (/:(00|30)\b/.test(chart.points[Math.min(n - 1, index + step2)].label)) hit = index + step2
+        if (hit >= 0) { index = Math.min(n - 1, Math.max(0, hit)); break }
+      }
+    }
+    var text = axisLabel(chart.points[index].label, periodKey)
+    if (text === "") continue
+    // Daily bars repeat a label whenever the thinning lands twice in the same
+    // month; a duplicate on the axis looks like a rendering fault.
+    if (out.x.length > 0 && out.x[out.x.length - 1].label === text) continue
+    out.x.push({ frac: frac, label: text })
   }
   return out
 }

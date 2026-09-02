@@ -139,6 +139,7 @@ stays, marked "not found" in red, so a typo is visible rather than mysterious.
 | `a` | Add a ticker |
 | `d` | Remove the ticker under the cursor |
 | `[` / `]` | Move the ticker under the cursor up / down the list |
+| drag a row | Reorder with the mouse — a marker shows where it will land |
 | `g` / `G` | First / last row of the current list |
 | `r` | Refresh now |
 | `Esc` | Close an open story or page, cancel the add field, or close the panel |
@@ -147,8 +148,10 @@ Lists with nothing in them are stepped over by `Tab` rather than landed on — a
 empty news list that eats the keyboard reads as the panel having frozen.
 
 Clicking a watchlist row opens its page; clicking a news row selects it.
-Middle-clicking a watchlist row removes it. Middle-clicking the bar icon
-refreshes.
+Dragging a watchlist row reorders the list — the row fades, a marker shows the
+gap it is going into, and the list is rewritten on the drop rather than under
+the pointer. Middle-clicking a watchlist row removes it. Middle-clicking the
+bar icon refreshes.
 
 **Nothing in the panel launches a browser.** There is no click, and no key,
 that navigates away from the shell.
@@ -190,16 +193,26 @@ a chart, and the fundamentals underneath. `Esc` brings the news back.
  Apple                               +0.82   +0.25%
 
  [1D] 1M  6M  YTD  1Y  5Y  MAX       +1.14   +0.35%
- ╭──────────────────────────────────────────────╮
- │                                       327.45 │
- │            the chart, with yesterday's close │
- │            dashed across it on 1D            │
- │                                       323.61 │
- ╰──────────────────────────────────────────────╯
- Open        326.87    Mkt cap             4.757T
- High        328.40    P/E                  37.51
+ ╭──────────────────────────────────────╮       │
+ │ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─│ 327.00
+ │        the chart, with yesterday's   │       │
+ │        close dashed across it on 1D  │ 325.00
+ │                                      │       │
+ ╰──────────────────────────────────────╯ 324.00
+   5:00 AM   7:30 AM   10:00 AM  12:00 PM
+
+ Open        326.87    Mkt cap             4.753T
+ High        328.40    P/E                  37.48
  …
 ```
+
+Prices run down the right against their own gridlines, on round steps rather
+than wherever the data happened to land, and times run along the bottom — the
+clock on 1D, dates on the rest, and years once the span is long enough that
+the day of the month is noise. Both come from the feed's own labels rather
+than from its timestamps, because Nasdaq sends exchange wall-clock dressed as
+an epoch: 4:00 AM ET arrives as 04:00 UTC, and converting it would slide every
+intraday chart by the reader's own offset.
 
 The index cards stay across the top throughout. What the broad market is
 doing is context for reading one company, not a competing screen, and the
@@ -219,6 +232,13 @@ in that order. There is no `5D`: the source serves 1D as minute bars and every
 other range as daily ones, so a five-day chart would be five dots joined by
 lines. Each period is fetched once and kept for the session; only 1D expires,
 after a minute. `r` refetches whatever is on screen.
+
+**Charts are fetched before they are asked for.** Resting on a row — with the
+pointer or with the cursor — fetches that company's 1D chart in the
+background, so the page opens with the chart already drawn instead of showing
+"Loading chart…" for two seconds. It is one request after a third of a second
+of rest, not one per keystroke, and a guess that does not pan out goes in the
+cache and nowhere near the screen.
 
 **The stats all came with the quote.** CNBC returns the whole fundamentals
 block whether or not anyone asks for it, so the page costs one chart request
@@ -335,8 +355,10 @@ back off exponentially after a failed request. News is fetched lazily — a pane
 you never open does not pull two RSS feeds all day — and then every ten
 minutes while it is on screen. The symbol index is lazier still: it is read
 from disk the first time the panel opens, and re-downloaded only when it is
-more than a week old. A chart is fetched when a period is first opened and
-then kept: only the intraday one goes stale, after a minute.
+more than a week old. A chart is fetched when a period is first opened — or a little before, when
+resting on a row gives it away — and then kept: only the intraday one goes
+stale, after a minute. Reopening the panel on a page it was left on re-asks,
+which the cache answers unless that minute has passed.
 
 ## Keybindings
 
