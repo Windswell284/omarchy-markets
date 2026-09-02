@@ -133,20 +133,22 @@ stays, marked "not found" in red, so a typo is visible rather than mysterious.
 | --- | --- |
 | `j` / `k`, `Up` / `Down` | Move within the current list |
 | `Tab` / `Shift+Tab` | Next / previous list — watchlist, market news, business news |
-| `o`, `Enter`, `Space` | Open the news row under the cursor in place; again closes it |
+| `o`, `Enter`, `Space` | Open what the cursor is on — a company's page, or a news row in place; again closes it |
+| `1`…`7` | Pick the chart period, while a page is open |
 | `Left` / `Right` | Cross the gutter between the watchlist and the news stack |
 | `a` | Add a ticker |
 | `d` | Remove the ticker under the cursor |
 | `[` / `]` | Move the ticker under the cursor up / down the list |
 | `g` / `G` | First / last row of the current list |
 | `r` | Refresh now |
-| `Esc` | Close an open story, cancel the add field, or close the panel |
+| `Esc` | Close an open story or page, cancel the add field, or close the panel |
 
 Lists with nothing in them are stepped over by `Tab` rather than landed on — an
 empty news list that eats the keyboard reads as the panel having frozen.
 
-Clicking a row selects it. Middle-clicking a watchlist row removes it.
-Middle-clicking the bar icon refreshes.
+Clicking a watchlist row opens its page; clicking a news row selects it.
+Middle-clicking a watchlist row removes it. Middle-clicking the bar icon
+refreshes.
 
 **Nothing in the panel launches a browser.** There is no click, and no key,
 that navigates away from the shell.
@@ -177,6 +179,52 @@ all.
 Headline links are still parsed and kept with each story. Nothing acts on
 them — they are there if you ever want a copy-link or an explicit open key.
 
+## The quote page
+
+Click a company in the watchlist — or press `o`, `Enter` or `Space` on it —
+and the right-hand side becomes that company: the price and the day's move,
+a chart, and the fundamentals underneath. `Esc` brings the news back.
+
+```
+ AAPL                                        325.95
+ Apple                               +0.82   +0.25%
+
+ [1D] 1M  6M  YTD  1Y  5Y  MAX       +1.14   +0.35%
+ ╭──────────────────────────────────────────────╮
+ │                                       327.45 │
+ │            the chart, with yesterday's close │
+ │            dashed across it on 1D            │
+ │                                       323.61 │
+ ╰──────────────────────────────────────────────╯
+ Open        326.87    Mkt cap             4.757T
+ High        328.40    P/E                  37.51
+ …
+```
+
+The index cards stay across the top throughout. What the broad market is
+doing is context for reading one company, not a competing screen, and the
+news stack is what gives way.
+
+The number beside the periods is the move **across the period on screen**,
+which is not the day's change in the header: 1D agrees with it and every
+other period does not.
+
+Moving the cursor deliberately does not follow. Each period is a one-to-three
+second request, so a page that tracked `j`/`k` would fire one per keystroke
+and show whichever came back last. The row whose page is open is marked
+separately from the cursor, because the two come apart.
+
+**Periods**: `1D`, `1M`, `6M`, `YTD`, `1Y`, `5Y`, `MAX`, on the number keys
+in that order. There is no `5D`: the source serves 1D as minute bars and every
+other range as daily ones, so a five-day chart would be five dots joined by
+lines. Each period is fetched once and kept for the session; only 1D expires,
+after a minute. `r` refetches whatever is on screen.
+
+**The stats all came with the quote.** CNBC returns the whole fundamentals
+block whether or not anyone asks for it, so the page costs one chart request
+and nothing else. Fields the quote does not carry are dropped rather than
+shown as dashes — an index has no P/E, and an ETF has no EPS.
+
 ## The bar
 
 The bar carries a chart glyph and one index's change, colored up or down:
@@ -196,6 +244,7 @@ Three feeds, none of which needs an API key:
 | | Source |
 | --- | --- |
 | Quotes | CNBC's quote service |
+| Charts | Nasdaq's chart API — intraday for 1D, daily bars for every other period |
 | Symbol search | Nasdaq's symbol directory, downloaded and searched locally |
 | Unlisted symbols | Nasdaq's autocomplete, as a fallback |
 | Market news | MarketWatch top stories, filtered to today |
@@ -286,7 +335,8 @@ back off exponentially after a failed request. News is fetched lazily — a pane
 you never open does not pull two RSS feeds all day — and then every ten
 minutes while it is on screen. The symbol index is lazier still: it is read
 from disk the first time the panel opens, and re-downloaded only when it is
-more than a week old.
+more than a week old. A chart is fetched when a period is first opened and
+then kept: only the intraday one goes stale, after a minute.
 
 ## Keybindings
 
@@ -312,11 +362,15 @@ o.bind("SUPER + Y", "Markets", "omarchy-shell pyang.finance toggle")
 ```
 
 IPC methods, for binding to keys: `open`, `close`, `toggle`, `refresh`,
-`add <symbol>`, `remove <symbol>` — e.g.
+`add <symbol>`, `remove <symbol>`, `page <symbol>`, `period <1D|1M|6M|YTD|1Y|5Y|MAX>`
+— e.g.
 
 ```bash
 omarchy-shell pyang.finance add NVDA
+omarchy-shell pyang.finance page NVDA     # straight to one company
 ```
+
+`page` takes any symbol, not only one on the watchlist.
 
 ## Hacking on it
 

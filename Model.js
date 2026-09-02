@@ -64,6 +64,20 @@ function formatPct(n) {
   return sign + Math.abs(n).toFixed(2) + "%"
 }
 
+// The two range labels beside the chart. Thousands separated, and the
+// decimals follow the magnitude: an index at 6,842.17 does not want four
+// places and a penny stock at 0.0431 does.
+function formatPrice(n) {
+  var v = Number(n)
+  if (!isFinite(v)) return ""
+  var places = Math.abs(v) >= 1000 ? 0 : (Math.abs(v) >= 1 ? 2 : 4)
+  var s = v.toFixed(places)
+  var dot = s.indexOf(".")
+  var whole = dot < 0 ? s : s.slice(0, dot)
+  var rest = dot < 0 ? "" : s.slice(dot)
+  return whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + rest
+}
+
 function formatSigned(n, places) {
   if (!isFinite(n)) return "--"
   var p = places === undefined ? 2 : places
@@ -130,6 +144,16 @@ function parseQuote(q) {
     volume: q.volume_alt || q.volume || "",
     marketCap: q.mktcapView || "",
     pe: q.pe || "",
+    // The rest of what the quote already carries. None of it costs a request:
+    // CNBC returns the whole fundamentals block whether or not anyone asks,
+    // and the quote page is where it finally gets shown.
+    eps: q.eps || "",
+    forwardPe: q.fpe || "",
+    forwardEps: q.feps || "",
+    beta: q.beta || "",
+    revenue: q.revenuettm || "",
+    sharesOut: q.sharesout || "",
+    avgVolume: q.tendayavgvol || "",
     yearHigh: q.yrhiprice || "",
     yearLow: q.yrloprice || "",
     dividendYield: q.dividendyield || "",
@@ -624,4 +648,155 @@ function symbolIndexStale(fetchedAtMs, nowMs, maxAgeDays) {
   var days = maxAgeDays === undefined ? SYMBOL_INDEX_MAX_AGE_DAYS : maxAgeDays
   if (!fetchedAtMs) return true
   return (nowMs - fetchedAtMs) > days * 24 * 60 * 60 * 1000
+}
+
+// -------------------------------------------------------- the quote page
+
+// The periods offered above the chart. Nasdaq serves 1D as intraday minute
+// bars and every dated range as daily bars, which is what decides this list:
+// a "5D" of five daily closes is five dots joined by lines, and a chart that
+// sparse is worse than not offering the period at all. So the jump is from
+// one day straight to one month.
+//
+// `days` is calendar days back from today; 0 means the intraday endpoint and
+// -1 means "back to January 1st".
+var CHART_PERIODS = [
+  { key: "1D",  days: 0 },
+  { key: "1M",  days: 30 },
+  { key: "6M",  days: 182 },
+  { key: "YTD", days: -1 },
+  { key: "1Y",  days: 365 },
+  { key: "5Y",  days: 1826 },
+  { key: "MAX", days: -2 }
+]
+
+// A canvas six hundred pixels wide cannot show nine thousand points, and MAX
+// on a long-listed company returns about that many. Thinning to roughly one
+// point per pixel costs nothing visible and keeps the paint cheap.
+var CHART_MAX_POINTS = 800
+
+function chartPeriodKeys() {
+  var out = []
+  for (var i = 0; i < CHART_PERIODS.length; i++) out.push(CHART_PERIODS[i].key)
+  return out
+}
+
+function chartPeriod(key) {
+  for (var i = 0; i < CHART_PERIODS.length; i++)
+    if (CHART_PERIODS[i].key === key) return CHART_PERIODS[i]
+  return CHART_PERIODS[0]
+}
+
+function isoDay(ms) {
+  var d = new Date(ms)
+  function pad(n) { return (n < 10 ? "0" : "") + n }
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate())
+}
+
+// Nasdaq wants to be told what kind of instrument it is being asked about and
+// answers "Symbol not exists." rather than guessing, so the asset class from
+// the symbol index is passed through. Anything unknown is tried as a stock.
+function chartAssetClass(asset) {
+  return String(asset || "").toUpperCase() === "ETF" ? "etf" : "stocks"
+}
+
+function chartUrl(symbol, periodKey, assetClass, nowMs) {
+  var sym = String(symbol || "").trim().toUpperCase()
+  var period = chartPeriod(periodKey)
+  var base = "https://api.nasdaq.com/api/quote/" + encodeURIComponent(sym)
+           + "/chart?assetclass=" + encodeURIComponent(chartAssetClass(assetClass))
+  if (period.days === 0) return base
+
+  var now = nowMs || Date.now()
+  var from
+  if (period.days === -1) from = new Date(new Date(now).getFullYear(), 0, 1).getTime()
+  else if (period.days === -2) from = new Date(1970, 0, 1).getTime()
+  else from = now - period.days * 24 * 60 * 60 * 1000
+  return base + "&fromdate=" + isoDay(from) + "&todate=" + isoDay(now)
+}
+
+// One series, flattened, plus the range and the move across it -- everything
+// the chart needs to draw itself and label its own change.
+//
+// Returns null for a failed or empty answer, which the panel shows as an
+// error rather than as an empty chart: a flat line at zero looks like data.
+function parseChart(text) {
+  var data = null
+  try { data = JSON.parse(text) } catch (e) { return null }
+  var d = data ? data.data : null
+  var rows = d ? d.chart : null
+  if (!rows || !rows.length) return null
+  // Nasdaq reports "Symbol not exists." as a row inside `chart` rather than as
+  // an HTTP error, so a first row with no price is a failure, not a series.
+  if (rows[0].y === undefined || rows[0].y === null) return null
+
+  var step = Math.max(1, Math.ceil(rows.length / CHART_MAX_POINTS))
+  var points = []
+  var min = Infinity, max = -Infinity
+  for (var i = 0; i < rows.length; i++) {
+    // Thin the middle, but never the last point: it is the current price, and
+    // dropping it makes the chart disagree with the number above it.
+    if (i % step !== 0 && i !== rows.length - 1) continue
+    var v = toNumber(rows[i].y)
+    if (!isFinite(v)) continue
+    var t = Number(rows[i].x)
+    points.push({ t: isFinite(t) ? t : i, v: v })
+    if (v < min) min = v
+    if (v > max) max = v
+  }
+  if (points.length < 2) return null
+
+  var first = points[0].v
+  var last = points[points.length - 1].v
+  var change = last - first
+  var pct = first !== 0 ? (change / first) * 100 : 0
+
+  return {
+    points: points,
+    count: points.length,
+    min: min,
+    max: max,
+    first: first,
+    last: last,
+    change: formatSigned(change, 2),
+    changePct: formatPct(pct),
+    up: change > 0,
+    down: change < 0,
+    // The dashed line the intraday chart is read against. Only 1D has one:
+    // over a month the opening price is a date, not a reference.
+    previousClose: toNumber(String(d.previousClose || "").replace(/[$,]/g, ""))
+  }
+}
+
+// The block under the chart. Every value here arrived with the quote the
+// panel already fetches, so the whole page costs one chart request and
+// nothing else. Empty fields are dropped rather than shown as "--": an index
+// has no P/E, and a row of dashes is noise pretending to be data.
+function pageStats(quote) {
+  if (!quote || !quote.valid) return []
+  var pairs = [
+    { key: "Open", value: quote.open },
+    { key: "Mkt cap", value: quote.marketCap },
+    { key: "High", value: quote.high },
+    { key: "P/E", value: quote.pe },
+    { key: "Low", value: quote.low },
+    { key: "Fwd P/E", value: quote.forwardPe },
+    { key: "Prev close", value: quote.prevClose },
+    { key: "EPS", value: quote.eps },
+    { key: "Volume", value: quote.volume },
+    { key: "Fwd EPS", value: quote.forwardEps },
+    { key: "Avg vol", value: quote.avgVolume },
+    { key: "Div yield", value: quote.dividendYield },
+    { key: "52w high", value: quote.yearHigh },
+    { key: "Beta", value: quote.beta },
+    { key: "52w low", value: quote.yearLow },
+    { key: "Revenue", value: quote.revenue }
+  ]
+  var out = []
+  for (var i = 0; i < pairs.length; i++) {
+    var v = pairs[i].value
+    if (v === undefined || v === null || String(v).trim() === "") continue
+    out.push({ key: pairs[i].key, value: String(v) })
+  }
+  return out
 }

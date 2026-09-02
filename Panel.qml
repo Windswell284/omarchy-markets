@@ -193,6 +193,9 @@ Panel {
 
   function removeTicker(index) {
     if (index < 0 || index >= root.tickers.length) return
+    // A page for a ticker that is no longer on the list has nothing to go
+    // back to, so it goes with it.
+    if (root.tickers[index] === root.pageSymbol) root.closePage()
     var next = root.tickers.slice()
     next.splice(index, 1)
     root.tickers = next
@@ -233,6 +236,11 @@ Panel {
     var wanted = root.indexSymbols.slice()
     if (root.barSymbol !== "" && wanted.indexOf(root.barSymbol) < 0) wanted.push(root.barSymbol)
     for (var i = 0; i < root.tickers.length; i++) wanted.push(root.tickers[i])
+    // A page can be opened on something that is not on the list -- the `page`
+    // IPC takes any symbol -- and a page with no quote above the chart is
+    // half a page.
+    if (root.pageSymbol !== "" && wanted.indexOf(root.pageSymbol) < 0)
+      wanted.push(root.pageSymbol)
     quoteProc.command = [root.fetcher, Model.quoteUrl(wanted)]
     quoteProc.running = true
   }
@@ -252,6 +260,12 @@ Panel {
     root.failures = 0
     refreshQuotes()
     refreshNews()
+    // r means "now", so the chart on screen is refetched rather than served
+    // from the cache it was just put in.
+    if (root.pageOpen) {
+      delete root.chartCache[root.pageSymbol + "|" + root.pagePeriod]
+      root.loadChart()
+    }
   }
 
   function ingestQuotes(text) {
@@ -309,7 +323,13 @@ Panel {
   }
 
   function expandCurrent() {
-    if (root.section === 0) return
+    // In the watchlist the thing under the cursor is a company, and opening
+    // one means its page rather than an expanded row.
+    if (root.section === 0) {
+      if (root.wlCursor >= 0 && root.wlCursor < root.tickers.length)
+        root.openPage(root.tickers[root.wlCursor])
+      return
+    }
     root.toggleExpand(root.section, root.cursorIn(root.section))
   }
 
@@ -348,6 +368,9 @@ Panel {
   // nothing in them are stepped over rather than landed on -- an empty news
   // list that eats the keyboard reads as the panel having frozen.
   function stepSection(direction) {
+    // With a page open the news lists are not on screen, and tabbing to a
+    // list nobody can see reads as the keyboard having died.
+    if (root.pageOpen) { root.section = 0; return }
     for (var i = 0; i < 3; i++) {
       var next = (root.section + direction * (i + 1) + 9) % 3
       if (rowsIn(next) > 0) { root.section = next; return }
@@ -557,6 +580,99 @@ Panel {
     searchProc.running = true
   }
 
+  // ---- The quote page. Clicking a watchlist row -- or pressing o, Enter or
+  //      Space on it -- gives that company the right-hand side: price, a
+  //      chart with selectable periods, and the fundamentals underneath. Esc
+  //      brings the news back. The index cards stay put throughout, because
+  //      what the broad market is doing is context for the company, not a
+  //      competing screen.
+  //
+  //      Moving the cursor deliberately does NOT follow: each period is a
+  //      one-to-three-second request, and stepping down a watchlist would
+  //      fire one per keystroke and show whichever came back last.
+  property string pageSymbol: ""
+  readonly property bool pageOpen: pageSymbol !== ""
+  readonly property var pageQuote: pageOpen ? (quotes[pageSymbol] || null) : null
+  property string pagePeriod: "1D"
+  property var pageChart: null
+  property bool pageLoading: false
+  property bool pageFailed: false
+  property bool chartPending: false
+
+  // Keyed SYMBOL|PERIOD. Every period but 1D is a finished picture of the
+  // past, so it is kept for the session and the intraday one alone expires.
+  property var chartCache: ({})
+  readonly property int chartTtlMs: root.pagePeriod === "1D" ? 60000 : 900000
+
+  function openPage(symbol) {
+    var s = Model.normalizeSymbol(symbol)
+    if (s === "") return
+    // Opening the row that is already open closes it, the same way o closes a
+    // story it opened.
+    if (root.pageSymbol === s) { root.closePage(); return }
+    root.pageSymbol = s
+    root.pagePeriod = "1D"
+    root.pageChart = null
+    root.loadChart()
+    // Nothing quoted for it yet: ask, so the header is not a row of dashes.
+    if (!root.quotes[s]) root.refreshQuotes()
+  }
+
+  function closePage() {
+    root.pageSymbol = ""
+    root.pageChart = null
+    root.pageLoading = false
+    root.pageFailed = false
+  }
+
+  function setPeriod(key) {
+    if (!root.pageOpen || root.pagePeriod === key) return
+    root.pagePeriod = key
+    root.loadChart()
+  }
+
+  // Nasdaq answers "Symbol not exists." rather than guessing what kind of
+  // instrument it was asked about, so the class comes from the symbol index.
+  function chartAssetOf(symbol) {
+    for (var i = 0; i < root.symbolIndex.length; i++)
+      if (root.symbolIndex[i].symbol === symbol) return root.symbolIndex[i].asset
+    return ""
+  }
+
+  function loadChart() {
+    if (!root.pageOpen) return
+    var key = root.pageSymbol + "|" + root.pagePeriod
+    var hit = root.chartCache[key]
+    if (hit && Date.now() - hit.at < root.chartTtlMs) {
+      root.pageChart = hit.chart
+      root.pageLoading = false
+      root.pageFailed = false
+      return
+    }
+    // A stale picture stays on screen while a fresh one is fetched; blanking
+    // the chart to redraw the same shape a second later only flickers.
+    root.pageChart = hit ? hit.chart : null
+    root.pageLoading = true
+    root.pageFailed = false
+    chartProc.retried = false
+    if (chartProc.running) { root.chartPending = true; return }
+    root.startChartFetch(undefined)
+  }
+
+  // `assetHint` overrides what the symbol index says, which is how the retry
+  // below asks the same question the other way round.
+  function startChartFetch(assetHint) {
+    root.chartPending = false
+    if (!root.pageOpen) return
+    chartProc.wantSymbol = root.pageSymbol
+    chartProc.wantPeriod = root.pagePeriod
+    chartProc.wantAsset = assetHint === undefined
+      ? root.chartAssetOf(root.pageSymbol) : assetHint
+    chartProc.command = [root.fetcher, Model.chartUrl(
+      root.pageSymbol, root.pagePeriod, chartProc.wantAsset, Date.now())]
+    chartProc.running = true
+  }
+
   // ---------------------------------------------------------------- wiring
 
   onOpenedChanged: {
@@ -590,6 +706,16 @@ Panel {
     function remove(symbol: string): void {
       var index = root.tickers.indexOf(Model.normalizeSymbol(symbol))
       if (index >= 0) root.removeTicker(index)
+    }
+    // Straight to one company's page, for a key that means "show me NVDA"
+    // rather than "show me the panel". Opens the panel if it is shut.
+    function page(symbol: string): void {
+      root.open()
+      root.openPage(symbol)
+    }
+    // The chart period on the open page: 1D, 1M, 6M, YTD, 1Y, 5Y or MAX.
+    function period(key: string): void {
+      root.setPeriod(String(key || "").toUpperCase())
     }
   }
 
@@ -720,6 +846,65 @@ Panel {
         root.searching = false
       }
       if (root.adding && root.pendingQuery !== root.activeQuery) Qt.callLater(root.runSearch)
+    }
+  }
+
+  Process {
+    id: chartProc
+    // Which request is in flight. A reply that arrives after the user has
+    // moved on is still cached -- it is the answer to a question they may ask
+    // again -- but it must not be drawn over what they are looking at now.
+    property string wantSymbol: ""
+    property string wantPeriod: ""
+    property string wantAsset: ""
+    // Nasdaq will not guess whether a symbol is a stock or a fund -- it
+    // answers "Symbol not exists." for the wrong one -- and the symbol index
+    // that knows the difference may not have finished loading, or may not
+    // list the symbol at all. So a miss is asked again the other way round
+    // before it is reported as a missing chart.
+    property bool retried: false
+    property string retryAs: ""
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var chart = Model.parseChart(String(text || ""))
+        if (chart !== null)
+          root.chartCache[chartProc.wantSymbol + "|" + chartProc.wantPeriod] =
+            { chart: chart, at: Date.now() }
+        if (chartProc.wantSymbol !== root.pageSymbol
+            || chartProc.wantPeriod !== root.pagePeriod) return
+        if (chart !== null) {
+          root.pageChart = chart
+          root.pageFailed = false
+          root.pageLoading = false
+          return
+        }
+        if (!chartProc.retried) {
+          // Queued rather than started here: the process this is reading from
+          // has not exited yet.
+          chartProc.retryAs =
+            Model.chartAssetClass(chartProc.wantAsset) === "etf" ? "STOCKS" : "ETF"
+          return
+        }
+        root.pageFailed = true
+        root.pageLoading = false
+      }
+    }
+    onExited: function(code, status) {
+      if (chartProc.retryAs !== "") {
+        var other = chartProc.retryAs
+        chartProc.retryAs = ""
+        chartProc.retried = true
+        Qt.callLater(function() { root.startChartFetch(other) })
+        return
+      }
+      if (code !== 0 && chartProc.wantSymbol === root.pageSymbol
+          && chartProc.wantPeriod === root.pagePeriod) {
+        root.pageFailed = true
+        root.pageLoading = false
+      }
+      if (root.chartPending) Qt.callLater(function() { root.startChartFetch(undefined) })
     }
   }
 
@@ -872,6 +1057,7 @@ Panel {
       // undoes the most recent thing.
       onCloseRequested: {
         if (root.detailOpen) root.collapseDetail()
+        else if (root.pageOpen) root.closePage()
         else root.close()
       }
       onDeleteRequested: { if (root.section === 0) root.removeTicker(root.wlCursor) }
@@ -885,6 +1071,12 @@ Panel {
         else if (t === "[") { if (root.section === 0) root.moveTicker(root.wlCursor, -1) }
         else if (t === "]") { if (root.section === 0) root.moveTicker(root.wlCursor, 1) }
         else if (t === "o" || t === "O") root.expandCurrent()
+        // Number keys pick a chart period, left to right as they are drawn.
+        else if (root.pageOpen && t >= "1" && t <= "9") {
+          var keys = Model.chartPeriodKeys()
+          var which = parseInt(t, 10) - 1
+          if (which >= 0 && which < keys.length) root.setPeriod(keys[which])
+        }
         else if (t === "g") root.setCursorIn(root.section, 0)
         else if (t === "G") root.setCursorIn(root.section, root.rowsIn(root.section) - 1)
       }
@@ -957,6 +1149,11 @@ Panel {
 
             readonly property var quote: root.quotes[quoteRow.modelData] || null
             readonly property bool current: root.section === 0 && root.wlCursor === quoteRow.index
+            // The row whose page is on the right. It is marked separately
+            // from the cursor because the two come apart: the cursor keeps
+            // moving while a page stays open, and a list with no sign of
+            // which row the right-hand side belongs to is a puzzle.
+            readonly property bool paged: root.pageSymbol === quoteRow.modelData
             readonly property bool hot: rowMouse.containsMouse
 
             Rectangle {
@@ -964,7 +1161,8 @@ Panel {
               anchors.rightMargin: Style.space(2)
               radius: Style.cornerRadius
               color: quoteRow.current ? Style.selectedFill
-                                      : (quoteRow.hot ? Style.hoverFill : "transparent")
+                                      : (quoteRow.hot ? Style.hoverFill
+                                      : (quoteRow.paged ? Util.alpha(root.fg, 0.06) : "transparent"))
             }
 
             // The cursor's own mark, so a selected row is still legible on a
@@ -1043,6 +1241,7 @@ Panel {
                 root.section = 0
                 root.wlCursor = quoteRow.index
                 if (mouse.button === Qt.MiddleButton) root.removeTicker(quoteRow.index)
+                else root.openPage(quoteRow.modelData)
               }
             }
           }
@@ -1417,10 +1616,367 @@ Panel {
           }
         }
 
+        // ---- The quote page, in place of the news stack
+
+        Item {
+          id: quotePage
+          visible: root.pageOpen
+          anchors.top: indexRow.bottom
+          anchors.topMargin: Style.space(14)
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+
+          readonly property var quote: root.pageQuote
+          readonly property var stats: Model.pageStats(quotePage.quote)
+          readonly property int statRowHeight: root.scaled(Style.space(17))
+
+          // --- the company and what it costs right now
+
+          Item {
+            id: pageHead
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: root.scaled(Style.space(42))
+
+            Text {
+              id: backChevron
+              anchors.left: parent.left
+              anchors.top: parent.top
+              text: "‹"
+              font.family: root.fontFamily
+              font.pixelSize: root.fontHead
+              color: backMouse.containsMouse ? root.fg : root.faintColor
+              renderType: Text.NativeRendering
+
+              MouseArea {
+                id: backMouse
+                anchors.fill: parent
+                anchors.margins: -Style.space(6)
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.closePage()
+              }
+            }
+
+            Text {
+              id: pageSymbolText
+              anchors.left: backChevron.right
+              anchors.leftMargin: Style.space(8)
+              anchors.top: parent.top
+              text: root.pageSymbol
+              font.family: root.fontFamily
+              font.pixelSize: root.fontHead
+              color: root.fg
+              renderType: Text.NativeRendering
+            }
+
+            Text {
+              anchors.left: pageSymbolText.left
+              anchors.top: pageSymbolText.bottom
+              anchors.right: pagePriceText.left
+              anchors.rightMargin: Style.space(10)
+              text: quotePage.quote ? quotePage.quote.brand : ""
+              elide: Text.ElideRight
+              font.family: root.fontFamily
+              font.pixelSize: root.fontTiny
+              color: root.mutedColor
+              renderType: Text.NativeRendering
+            }
+
+            Text {
+              id: pagePriceText
+              anchors.right: parent.right
+              anchors.top: parent.top
+              text: quotePage.quote ? quotePage.quote.last : "--"
+              font.family: root.fontFamily
+              font.pixelSize: root.fontHead
+              color: root.fg
+              renderType: Text.NativeRendering
+            }
+
+            Text {
+              anchors.right: parent.right
+              anchors.top: pagePriceText.bottom
+              text: quotePage.quote
+                ? quotePage.quote.change + "  " + quotePage.quote.changePct : ""
+              font.family: root.fontFamily
+              font.pixelSize: root.fontTiny
+              color: root.tone(quotePage.quote)
+              renderType: Text.NativeRendering
+            }
+          }
+
+          // --- periods, and what the stock did across the one on screen
+
+          Item {
+            id: periodBar
+            anchors.top: pageHead.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: root.scaled(Style.space(22))
+
+            Row {
+              id: periodRow
+              anchors.left: parent.left
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(2)
+
+              Repeater {
+                model: Model.chartPeriodKeys()
+
+                delegate: Rectangle {
+                  required property var modelData
+                  readonly property bool active: modelData === root.pagePeriod
+                  width: periodLabel.implicitWidth + Style.space(12)
+                  height: root.scaled(Style.space(18))
+                  radius: Style.cornerRadius
+                  color: active ? Style.selectedFill
+                                : (periodMouse.containsMouse ? Style.hoverFill : "transparent")
+
+                  Text {
+                    id: periodLabel
+                    anchors.centerIn: parent
+                    text: modelData
+                    font.family: root.fontFamily
+                    font.pixelSize: root.fontTiny
+                    color: parent.active ? root.fg : root.mutedColor
+                    renderType: Text.NativeRendering
+                  }
+
+                  MouseArea {
+                    id: periodMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.setPeriod(modelData)
+                  }
+                }
+              }
+            }
+
+            // The move across the period on screen, which is a different
+            // number from the day's change in the header and is the one the
+            // chart is actually drawing.
+            Text {
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              visible: root.pageChart !== null
+              text: root.pageChart
+                ? root.pageChart.change + "  " + root.pageChart.changePct : ""
+              font.family: root.fontFamily
+              font.pixelSize: root.fontTiny
+              color: root.pageChart
+                ? (root.pageChart.up ? root.upColor
+                  : (root.pageChart.down ? root.downColor : root.mutedColor))
+                : root.mutedColor
+              renderType: Text.NativeRendering
+            }
+          }
+
+          // --- the chart
+
+          Item {
+            id: chartArea
+            anchors.top: periodBar.bottom
+            anchors.topMargin: Style.space(6)
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: statsBlock.top
+            anchors.bottomMargin: Style.space(8)
+
+            Canvas {
+              id: chartCanvas
+              anchors.fill: parent
+              anchors.rightMargin: highLabel.implicitWidth + Style.space(8)
+              renderStrategy: Canvas.Cooperative
+              opacity: root.pageLoading && root.pageChart !== null ? 0.45 : 1
+
+              // Canvas does not repaint on its own when what it draws from
+              // changes, and every one of these changes what it draws.
+              property var series: root.pageChart
+              property color lineColor: !root.pageChart ? root.mutedColor
+                : (root.pageChart.up ? root.upColor
+                  : (root.pageChart.down ? root.downColor : root.mutedColor))
+              onSeriesChanged: requestPaint()
+              onLineColorChanged: requestPaint()
+              onWidthChanged: requestPaint()
+              onHeightChanged: requestPaint()
+
+              onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                var c = chartCanvas.series
+                if (!c || !c.points || c.points.length < 2) return
+
+                var w = width, h = height, pad = Math.max(2, Style.space(2))
+                var min = c.min, max = c.max
+
+                // The intraday chart is read against yesterday's close, so
+                // that line has to be inside the range or it is drawn off the
+                // top of the canvas on a gap day.
+                var base = root.pagePeriod === "1D" && isFinite(c.previousClose)
+                           && c.previousClose > 0 ? c.previousClose : NaN
+                if (isFinite(base)) { min = Math.min(min, base); max = Math.max(max, base) }
+
+                var span = max - min
+                if (span <= 0) span = Math.abs(max) * 0.01 || 1
+                // Headroom, so the line never runs along the very edge.
+                min -= span * 0.08; max += span * 0.08; span = max - min
+
+                var n = c.points.length
+                function px(i) { return pad + (w - 2 * pad) * (i / (n - 1)) }
+                function py(v) { return h - pad - (h - 2 * pad) * ((v - min) / span) }
+
+                var col = chartCanvas.lineColor
+
+                if (isFinite(base)) {
+                  ctx.save()
+                  ctx.strokeStyle = Qt.rgba(col.r, col.g, col.b, 0.35)
+                  ctx.lineWidth = 1
+                  if (ctx.setLineDash) ctx.setLineDash([3, 3])
+                  ctx.beginPath()
+                  ctx.moveTo(pad, py(base))
+                  ctx.lineTo(w - pad, py(base))
+                  ctx.stroke()
+                  ctx.restore()
+                }
+
+                ctx.beginPath()
+                ctx.moveTo(px(0), py(c.points[0].v))
+                for (var i = 1; i < n; i++) ctx.lineTo(px(i), py(c.points[i].v))
+
+                // The fill closes the same path down to the floor, so the
+                // area and the line can never disagree about the shape.
+                ctx.save()
+                ctx.lineTo(px(n - 1), h)
+                ctx.lineTo(px(0), h)
+                ctx.closePath()
+                var grad = ctx.createLinearGradient(0, 0, 0, h)
+                grad.addColorStop(0, Qt.rgba(col.r, col.g, col.b, 0.20))
+                grad.addColorStop(1, Qt.rgba(col.r, col.g, col.b, 0.0))
+                ctx.fillStyle = grad
+                ctx.fill()
+                ctx.restore()
+
+                ctx.beginPath()
+                ctx.moveTo(px(0), py(c.points[0].v))
+                for (var j = 1; j < n; j++) ctx.lineTo(px(j), py(c.points[j].v))
+                ctx.strokeStyle = col
+                ctx.lineWidth = Math.max(1, Style.space(1.5))
+                ctx.lineJoin = "round"
+                ctx.stroke()
+              }
+            }
+
+            // The range, as two labels rather than an axis. A gridded axis
+            // costs a third of the width to say what two numbers say.
+            Text {
+              id: highLabel
+              anchors.right: parent.right
+              anchors.top: parent.top
+              visible: root.pageChart !== null
+              text: root.pageChart ? Model.formatPrice(root.pageChart.max) : ""
+              font.family: root.fontFamily
+              font.pixelSize: root.fontTiny
+              color: root.faintColor
+              renderType: Text.NativeRendering
+            }
+
+            Text {
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              visible: root.pageChart !== null
+              text: root.pageChart ? Model.formatPrice(root.pageChart.min) : ""
+              font.family: root.fontFamily
+              font.pixelSize: root.fontTiny
+              color: root.faintColor
+              renderType: Text.NativeRendering
+            }
+
+            // Loading and failure are named, for the same reason the ticker
+            // picker names them: an empty chart area and a broken one look
+            // exactly alike.
+            Text {
+              anchors.centerIn: parent
+              visible: root.pageChart === null
+              text: root.pageFailed ? "No chart for this symbol" : "Loading chart…"
+              font.family: root.fontFamily
+              font.pixelSize: root.fontTiny
+              color: root.faintColor
+              renderType: Text.NativeRendering
+            }
+          }
+
+          // --- the fundamentals, all of which came with the quote
+
+          Item {
+            id: statsBlock
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: Math.ceil(quotePage.stats.length / 2) * quotePage.statRowHeight
+                    + Style.space(8)
+
+            Rectangle {
+              anchors.top: parent.top
+              anchors.left: parent.left
+              anchors.right: parent.right
+              height: Math.max(1, Style.space(1))
+              color: root.ruleColor
+            }
+
+            Grid {
+              id: statsGrid
+              anchors.top: parent.top
+              anchors.topMargin: Style.space(6)
+              anchors.left: parent.left
+              anchors.right: parent.right
+              columns: 2
+              columnSpacing: root.gutter
+
+              readonly property int cellWidth:
+                Math.floor((width - columnSpacing) / 2)
+
+              Repeater {
+                model: quotePage.stats
+
+                delegate: Item {
+                  required property var modelData
+                  width: statsGrid.cellWidth
+                  height: quotePage.statRowHeight
+
+                  Text {
+                    anchors.left: parent.left
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: modelData.key
+                    font.family: root.fontFamily
+                    font.pixelSize: root.fontTiny
+                    color: root.faintColor
+                    renderType: Text.NativeRendering
+                  }
+
+                  Text {
+                    anchors.right: parent.right
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: modelData.value
+                    font.family: root.fontFamily
+                    font.pixelSize: root.fontTiny
+                    color: root.mutedColor
+                    renderType: Text.NativeRendering
+                  }
+                }
+              }
+            }
+          }
+        }
+
         // ---- Market news
 
         Item {
           id: marketSection
+          visible: !root.pageOpen
           anchors.top: indexRow.bottom
           anchors.topMargin: Style.space(14)
           anchors.left: parent.left
@@ -1473,6 +2029,7 @@ Panel {
 
         Item {
           id: businessSection
+          visible: !root.pageOpen
           anchors.left: parent.left
           anchors.right: parent.right
           anchors.bottom: parent.bottom
