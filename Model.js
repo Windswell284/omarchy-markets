@@ -848,35 +848,53 @@ function parseFinancials(text) {
   return out
 }
 
-// The block under the chart. Most of it arrived with the quote the panel
-// already fetches; the statement figures are the one part that costs its own
+// The block under the chart, as two independent columns rather than one list
+// dealt left-right: the left is what the company is worth and what it earns,
+// read straight down from size to cash, and the right is everything about the
+// share -- what it is priced at and how it trades. They are different
+// questions and they no longer interleave.
+//
+// Most of the right column arrived with the quote the panel already fetches.
+// The left column's statement figures are the one part that costs its own
 // requests, and a fund that has no statements simply drops those rows.
 //
 // Empty fields are dropped rather than shown as "--": an index has no P/E,
 // and a row of dashes is noise pretending to be data.
 function pageStats(quote, financials) {
-  if (!quote || !quote.valid) return []
+  if (!quote || !quote.valid) return { left: [], right: [] }
   var q = (financials && financials.q) || null
   var y = (financials && financials.y) || null
 
-  var pairs = [
+  // Revenue for the year comes from the annual statement rather than from
+  // the quote's trailing-twelve-month figure, so that the year and the
+  // quarter above and below each other are the same measure of the same
+  // thing. A TTM number beside a fiscal quarter invites a subtraction that
+  // does not mean anything.
+  var left = [
     { key: "Mkt cap", value: quote.marketCap },
-    { key: "P/E", value: quote.pe },
-    { key: "Volume", value: quote.volume },
-    { key: "Fwd P/E", value: quote.forwardPe },
-    { key: "Avg vol", value: quote.avgVolume },
     { key: "EPS", value: quote.eps },
-    { key: "52w high", value: quote.yearHigh },
-    { key: "Fwd EPS", value: quote.forwardEps },
-    { key: "52w low", value: quote.yearLow },
-    { key: "Div yield", value: quote.dividendYield },
-    { key: "Revenue (TTM)", value: quote.revenue },
+    { key: "Revenue (yr)", value: y ? formatBigMoney(y.revenue) : "" },
     { key: "Revenue (Q)", value: q ? formatBigMoney(q.revenue) : "" },
-    { key: "Net income (Q)", value: q ? formatBigMoney(q.netIncome) : "" },
     { key: "Net income (yr)", value: y ? formatBigMoney(y.netIncome) : "" },
+    { key: "Net income (Q)", value: q ? formatBigMoney(q.netIncome) : "" },
     { key: "Op cash flow (yr)", value: y ? formatBigMoney(y.opCashFlow) : "" }
   ]
 
+  var right = [
+    { key: "P/E", value: quote.pe },
+    { key: "Fwd P/E", value: quote.forwardPe },
+    { key: "Fwd EPS", value: quote.forwardEps },
+    { key: "Div yield", value: quote.dividendYield },
+    { key: "Volume", value: quote.volume },
+    { key: "Avg vol", value: quote.avgVolume },
+    { key: "52w high", value: quote.yearHigh },
+    { key: "52w low", value: quote.yearLow }
+  ]
+
+  return { left: keepFilled(left), right: keepFilled(right) }
+}
+
+function keepFilled(pairs) {
   var out = []
   for (var i = 0; i < pairs.length; i++) {
     var v = pairs[i].value

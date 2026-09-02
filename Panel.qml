@@ -2275,8 +2275,11 @@ Panel {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
-            height: Math.ceil(quotePage.stats.length / 2) * quotePage.statRowHeight
-                    + Style.space(8)
+            // Two independent columns, so the taller one sets the height
+            // rather than a shared row count padding the shorter with blanks.
+            height: Math.max(quotePage.stats.left.length,
+                             quotePage.stats.right.length)
+                    * quotePage.statRowHeight + Style.space(8)
 
             Rectangle {
               anchors.top: parent.top
@@ -2286,57 +2289,34 @@ Panel {
               color: root.ruleColor
             }
 
-            Grid {
-              id: statsGrid
+            Row {
+              id: statsRow
               anchors.top: parent.top
               anchors.topMargin: Style.space(6)
               anchors.left: parent.left
               anchors.right: parent.right
-              columns: 2
-              columnSpacing: root.gutter
+              spacing: root.gutter
 
-              readonly property int cellWidth:
-                Math.floor((width - columnSpacing) / 2)
+              readonly property int columnWidth: Math.floor((width - spacing) / 2)
 
-              Repeater {
-                model: quotePage.stats
+              // What the company is worth and what it earns, read straight
+              // down from size to cash.
+              Column {
+                width: statsRow.columnWidth
 
-                delegate: Item {
-                  required property var modelData
-                  width: statsGrid.cellWidth
-                  height: quotePage.statRowHeight
+                Repeater {
+                  model: quotePage.stats.left
+                  delegate: statCell
+                }
+              }
 
-                  Text {
-                    anchors.left: parent.left
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: modelData.key
-                    font.family: root.fontFamily
-                    font.pixelSize: root.fontSmall
-                    color: root.mutedColor
-                    renderType: Text.NativeRendering
-                  }
+              // What the share is priced at and how it trades.
+              Column {
+                width: statsRow.columnWidth
 
-                  // The value carries the full foreground. A label can afford
-                  // to recede; the number it labels is the thing being read.
-                  Text {
-                    anchors.right: parent.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: modelData.value
-                    font.family: root.fontFamily
-                    font.pixelSize: root.fontSmall
-                    color: root.fg
-                    renderType: Text.NativeRendering
-                  }
-
-                  // A hairline under each row, so the eye can cross a wide
-                  // gap from label to number without losing the line.
-                  Rectangle {
-                    anchors.left: parent.left
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    height: Math.max(1, Style.space(1))
-                    color: Util.alpha(root.fg, 0.05)
-                  }
+                Repeater {
+                  model: quotePage.stats.right
+                  delegate: statCell
                 }
               }
             }
@@ -2457,6 +2437,51 @@ Panel {
   // component gets its own scope and cannot see this file's ids -- every
   // `root.` in here would fail to resolve. Both news lists share this one and
   // are told apart through the attached ListView.
+  // One row of the stats block. A Component rather than an inline component
+  // so it can still see this file's ids -- an inline one gets its own scope
+  // and every root. reference in it fails to resolve.
+  Component {
+    id: statCell
+
+    Item {
+      required property var modelData
+      width: statsRow.columnWidth
+      height: quotePage.statRowHeight
+
+      Text {
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        text: modelData.key
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSmall
+        color: root.mutedColor
+        renderType: Text.NativeRendering
+      }
+
+      // The value carries the full foreground. A label can afford to recede;
+      // the number it labels is the thing being read.
+      Text {
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        text: modelData.value
+        font.family: root.fontFamily
+        font.pixelSize: root.fontSmall
+        color: root.fg
+        renderType: Text.NativeRendering
+      }
+
+      // A hairline under each row, so the eye can cross a wide gap from
+      // label to number without losing the line.
+      Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: Math.max(1, Style.space(1))
+        color: Util.alpha(root.fg, 0.05)
+      }
+    }
+  }
+
   Component {
     id: newsDelegate
 

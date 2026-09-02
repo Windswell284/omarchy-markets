@@ -267,20 +267,39 @@ background, so the page opens with the chart already drawn instead of showing
 of rest, not one per keystroke, and a guess that does not pan out goes in the
 cache and nowhere near the screen.
 
-**The numbers.** Market cap, volume and average volume, the 52-week range,
-P/E and forward P/E, EPS and forward EPS, dividend yield and revenue over the
-trailing twelve months all arrive with the quote CNBC is already being asked
-for, so they cost nothing.
+**The numbers**, in two columns that answer two different questions. They run
+independently — the taller one sets the height — rather than one list dealt
+left and right.
 
-Four more come from the statements and are worth their own requests: **revenue
-and net income for the last quarter, net income for the last full year, and
-cash from operations for that year.** Those are two calls to Nasdaq's
-financials API — the quarterly set and the annual one — cached per company for
-six hours, which is generous for figures that move once a quarter. Each set
-fills in as it lands rather than waiting for the other.
+| The company | The share |
+| --- | --- |
+| Mkt cap | P/E |
+| EPS | Fwd P/E |
+| Revenue (yr) | Fwd EPS |
+| Revenue (Q) | Div yield |
+| Net income (yr) | Volume |
+| Net income (Q) | Avg vol |
+| Op cash flow (yr) | 52w high |
+| | 52w low |
 
-Open, high, low and previous close are not repeated here; they are already on
-the strip under the watchlist, for whichever row the cursor is on.
+Read the left column straight down and it goes from what the company is worth
+to what it earns to what it actually collects. The right is about the share:
+what it is priced at and how it trades.
+
+Everything on the right, and the first two on the left, arrive with the quote
+CNBC is already being asked for, so they cost nothing. The five statement
+figures are two calls to Nasdaq's financials API — the quarterly set and the
+annual one — cached per company for six hours, which is generous for numbers
+that move once a quarter. Each set fills in as it lands rather than waiting
+for the other.
+
+Revenue for the year comes from the annual statement rather than from the
+quote's trailing-twelve-month figure, so that the year and the quarter sitting
+above and below each other measure the same thing the same way. A TTM number
+beside a fiscal quarter invites a subtraction that does not mean anything.
+
+Open, high, low and previous close are not here; they are already on the strip
+under the watchlist, for whichever row the cursor is on.
 
 Fields a company does not have are dropped rather than shown as dashes. A fund
 has no statements at all — Nasdaq answers "Unsupported Asset Class" — so those
