@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "pyang.finance",
+  "name": "Markets",
+  "version": "1.0.0",
+  "author": "pyang",
+  "license": "MIT",
+  "description": "Watchlist quotes, market indexes and news, in the Omarchy bar",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Markets",
+    "description": "Watchlist quotes on the left, indexes and news on the right.",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "barSymbol": ".SPX",
+      "showBarChange": true,
+      "refreshIntervalSec": 30,
+      "newsIntervalSec": 600,
+      "textScale": 1.25,
+      "marketNewsTodayOnly": true
+    },
+    "schema": [
+      {
+        "key": "showBarChange",
+        "type": "boolean",
+        "label": "Show index change in the bar",
+        "defaultValue": true
+      },
+      {
+        "key": "barSymbol",
+        "type": "string",
+        "label": "Symbol shown in the bar",
+        "defaultValue": ".SPX"
+      },
+      {
+        "key": "textScale",
+        "type": "number",
+        "label": "Panel text size",
+        "min": 0.6,
+        "max": 2.5,
+        "step": 0.05,
+        "defaultValue": 1.25
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Quote refresh (seconds, panel open)",
+        "min": 10,
+        "max": 3600,
+        "step": 5,
+        "defaultValue": 30
+      },
+      {
+        "key": "newsIntervalSec",
+        "type": "integer",
+        "label": "News refresh (seconds)",
+        "min": 60,
+        "max": 7200,
+        "step": 60,
+        "defaultValue": 600
+      },
+      {
+        "key": "marketNewsTodayOnly",
+        "type": "boolean",
+        "label": "Market news: today only",
+        "defaultValue": true
+      }
+    ]
+  }
+}

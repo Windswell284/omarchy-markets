@@ -1,0 +1,40 @@
+#!/bin/bash
+#
+# Fetch one feed for the Markets panel and write the body to stdout.
+#
+#   fetch-feed <url>
+#
+# The panel builds the URLs (Model.js owns that, so node can exercise it) and
+# this script owns nothing but the transport. It exists because of one detail
+# that is easy to lose and expensive to rediscover: CNBC serves 403 to curl's
+# default User-Agent, on both the quote service and the RSS feeds. An empty
+# UA works today and a browser UA works reliably, so a browser UA is what we
+# send. Qt's QML XMLHttpRequest refuses to let a caller set User-Agent at all,
+# which is why the panel shells out to here instead of fetching in-process.
+#
+# Exit status is curl's, so the caller can tell a failed fetch from an empty
+# one and leave the last good data on screen.
+
+set -uo pipefail
+
+url="${1:-}"
+if [[ -z $url ]]; then
+  echo "usage: fetch-feed <url>" >&2
+  exit 2
+fi
+
+UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
+exec curl \
+  --silent \
+  --show-error \
+  --location \
+  --compressed \
+  --max-time 15 \
+  --connect-timeout 6 \
+  --retry 1 \
+  --retry-delay 1 \
+  --fail \
+  --user-agent "$UA" \
+  --header 'Accept: application/json, text/xml, application/rss+xml;q=0.9, */*;q=0.8' \
+  "$url"

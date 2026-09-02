@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Add this plugin's Hyprland keybindings.
+#
+# `omarchy plugin add` places the widget in the bar and stops there -- the
+# manifest has no way to declare a key, and nothing in the install path touches
+# Hyprland. So the bindings are opt-in, and this puts them in for you.
+#
+#   ./install-bindings            add SUPER+Y
+#   ./install-bindings --remove   take it out again
+#
+# Only the one key. Refreshing has its own affordances already -- r inside the
+# panel, middle-click on the bar icon -- so a second global binding would be
+# spending a scarce key on something that is never reached for cold.
+set -euo pipefail
+
+BINDINGS="${HOME}/.config/hypr/bindings.lua"
+MARK="-- pyang.finance (markets)"
+
+say() { printf '%s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+[[ -f $BINDINGS ]] || die "no $BINDINGS -- is this an Omarchy system?"
+
+backup() {
+  cp "$BINDINGS" "${BINDINGS}.bak.$(date +%s)"
+}
+
+reload() {
+  command -v hyprctl >/dev/null || return 0
+  hyprctl reload >/dev/null 2>&1 || true
+  local errs
+  errs=$(hyprctl configerrors 2>/dev/null | tr -d '[:space:]')
+  [[ -z $errs ]] || die "Hyprland reported config errors -- check $BINDINGS"
+}
+
+if [[ ${1:-} == --remove ]]; then
+  grep -qF -- "$MARK" "$BINDINGS" || { say "not installed, nothing to do"; exit 0; }
+  backup
+  # drop the marker line and the two binds that follow it
+  awk -v mark="$MARK" '
+    index($0, mark) { skip = 1; next }
+    skip > 0 && /^o\.bind\(/ { skip--; next }
+    { skip = 0; print }
+  ' "$BINDINGS" > "${BINDINGS}.tmp" && mv "${BINDINGS}.tmp" "$BINDINGS"
+  reload
+  say "removed. SUPER+Y is free again."
+  exit 0
+fi
+
+if grep -qF -- "$MARK" "$BINDINGS"; then
+  say "already installed -- nothing to do."
+  exit 0
+fi
+
+# Squash a combo to modifiers-and-key with no spaces or pluses, so the config
+# spelling ("SUPER + Y") and the listing spelling ("SUPER SHIFT + T")
+# compare equal. Getting this wrong is not harmless: the check silently passes
+# and the bind lands on top of whatever already held the key.
+canon() { tr -d ' +' | tr '[:lower:]' '[:upper:]'; }
+
+# Refuse to clobber a key that is already spoken for. The file is checked as
+# well as Omarchy's listing: the listing reflects live Hyprland state, and
+# `hyprctl reload` is asynchronous, so on its own it can report a key as free
+# for a moment after something else claimed it.
+bound_already() {
+  local combo=$1 pattern=${1//+/\\+} want
+  grep -qE "^[^-]*o\.bind\(\s*\"${pattern}\"" "$BINDINGS" && return 0
+  command -v omarchy >/dev/null || return 1
+  want=$(printf '%s' "$combo" | canon)
+  omarchy menu keybindings --print 2>/dev/null \
+    | awk -F'→' 'NF > 1 { print $1 }' \
+    | canon \
+    | grep -qx -- "$want"
+}
+
+for combo in "SUPER + Y"; do
+  if bound_already "$combo"; then
+    die "$combo is already bound. Edit $BINDINGS by hand, or rebind that first."
+  fi
+done
+
+backup
+cat >> "$BINDINGS" <<'LUA'
+
+-- pyang.finance (markets)
+o.bind("SUPER + Y", "Markets", "omarchy-shell pyang.finance toggle")
+LUA
+reload
+say "added:"
+say "  SUPER + Y  open the markets panel"
