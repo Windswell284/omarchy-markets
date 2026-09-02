@@ -7,6 +7,8 @@ companies' news beneath.
 
 One watchlist, one JSON file, one request per refresh.
 
+![The panel: watchlist, indexes, market news, business news](docs/panel.png)
+
 ## Install
 
 ```bash
@@ -148,6 +150,8 @@ request and reaches nowhere. Press `o`, `Enter` or `Space` on the row, or
 click a row that is already selected; `Esc` or the same key again closes it.
 Moving the cursor closes it too — an open row belongs to what you are reading,
 not to the list.
+
+![A story opened in place, showing who else reported it](docs/story.png)
 
 The only hint a row carries is a small chevron, shown on the row under the
 cursor and on hover. One on every row would be a column of arrows down the
