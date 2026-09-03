@@ -148,6 +148,11 @@ stays, marked "not found" in red, so a typo is visible rather than mysterious.
 Lists with nothing in them are stepped over by `Tab` rather than landed on — an
 empty news list that eats the keyboard reads as the panel having frozen.
 
+Hovering a watchlist row moves the cursor to it, so the ticker that is lit up
+is the one `Enter` opens — a highlighted row and a keypress disagreeing about
+which company they mean is the sort of thing you only notice after opening the
+wrong one.
+
 Clicking a watchlist row opens its page; clicking a news row selects it.
 Dragging a watchlist row reorders the list — the row fades, a marker shows the
 gap it is going into, and the list is rewritten on the drop rather than under

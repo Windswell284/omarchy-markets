@@ -1224,8 +1224,12 @@ Panel {
         if (dx < 0) { if (root.rowsIn(0) > 0) root.section = 0 }
         else if (dx > 0) { if (root.section === 0) root.stepSection(1) }
       }
+      // Only activateRequested. PanelKeyCatcher emits returnRequested AND
+      // activateRequested for one press of Return -- Space emits activate
+      // alone -- so handling both ran every action twice: Return opened a
+      // page and then toggled it straight back shut, and expanded a news row
+      // and collapsed it again. Activate alone still covers both keys.
       onActivateRequested: root.expandCurrent()
-      onReturnRequested: root.expandCurrent()
       // Esc closes what is open before it closes the panel, so the key always
       // undoes the most recent thing.
       onCloseRequested: {
@@ -1415,10 +1419,19 @@ Panel {
               hoverEnabled: true
               acceptedButtons: Qt.LeftButton | Qt.MiddleButton
 
-              // Resting the pointer on a row is a good guess at what is about
-              // to be clicked, and a chart fetched now is a page that opens
-              // at once instead of in two seconds.
-              onEntered: root.queuePrefetch(quoteRow.modelData)
+              // Two things happen on hover. The cursor follows the pointer,
+              // so the row that is lit up is the row Return acts on -- a
+              // highlighted ticker and the one a keypress opens being
+              // different tickers is the kind of thing you only notice by
+              // opening the wrong company. And the chart is fetched now, so
+              // the page opens drawn rather than in two seconds.
+              onEntered: {
+                if (!root.dragging && !root.adding) {
+                  root.section = 0
+                  root.setCursorIn(0, quoteRow.index)
+                }
+                root.queuePrefetch(quoteRow.modelData)
+              }
 
               property real pressY: 0
               // A press that has travelled far enough to be a drag rather
