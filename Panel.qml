@@ -624,9 +624,10 @@ Panel {
   // ---- The quote page. Clicking a watchlist row -- or pressing o, Enter or
   //      Space on it -- gives that company the right-hand side: price, a
   //      chart with selectable periods, and the fundamentals underneath. Esc
-  //      brings the news back. The index cards stay put throughout, because
-  //      what the broad market is doing is context for the company, not a
-  //      competing screen.
+  //      brings the news back. Clicking an index card does the same for the
+  //      index, minus the fundamentals it does not have. The cards stay put
+  //      throughout, because what the broad market is doing is context for
+  //      the company, not a competing screen.
   //
   //      Moving the cursor deliberately does NOT follow: each period is a
   //      one-to-three-second request, and stepping down a watchlist would
@@ -706,7 +707,10 @@ Panel {
     root.pagePeriod = "1D"
     root.pageChart = null
     root.loadChart()
-    root.loadFinancials()
+    // An index has no statements, and Nasdaq answers the request for them
+    // with "Unsupported Asset Class"; two requests for nothing are skipped.
+    if (Model.chartSource(s) === "nasdaq") root.loadFinancials()
+    else root.pageFinancials = null
     // Nothing quoted for it yet: ask, so the header is not a row of dashes.
     if (!root.quotes[s]) root.refreshQuotes()
   }
@@ -1012,7 +1016,7 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var chart = Model.parseChart(String(text || ""))
+        var chart = Model.parseChart(String(text || ""), "1D")
         // Cache or nothing. A guess that did not pan out must not put an
         // error on screen: the reader never asked for this.
         if (chart !== null)
@@ -1041,7 +1045,7 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
-        var chart = Model.parseChart(String(text || ""))
+        var chart = Model.parseChart(String(text || ""), chartProc.wantPeriod)
         if (chart !== null)
           root.chartCache[chartProc.wantSymbol + "|" + chartProc.wantPeriod] =
             { chart: chart, at: Date.now() }
@@ -1053,7 +1057,7 @@ Panel {
           root.pageLoading = false
           return
         }
-        if (!chartProc.retried) {
+        if (!chartProc.retried && Model.chartSource(chartProc.wantSymbol) === "nasdaq") {
           // Queued rather than started here: the process this is reading from
           // has not exited yet.
           chartProc.retryAs =
@@ -1800,10 +1804,14 @@ Panel {
               width: Math.floor((indexRow.width - Style.space(10) * (root.indexSymbols.length - 1))
                                 / Math.max(1, root.indexSymbols.length))
               height: indexRow.height
+              // The card whose page is open is marked the way the open
+              // watchlist row is, so the header and the card agree.
+              readonly property bool open: root.pageSymbol === indexCard.modelData
               radius: Style.cornerRadius
-              color: Style.normalFill
+              color: indexCard.open ? Style.selectedFill : Style.normalFill
               border.width: Math.max(1, Style.space(1))
-              border.color: cardMouse.containsMouse ? Style.hoverBorderColor : root.ruleColor
+              border.color: cardMouse.containsMouse || indexCard.open
+                ? Style.hoverBorderColor : root.ruleColor
 
               Column {
                 anchors.left: parent.left
@@ -1846,12 +1854,16 @@ Panel {
                 }
               }
 
-              // Hover only. There is nowhere for a click on an index to go.
+              // A click gives the index the page, exactly as a watchlist row
+              // does, and resting on the card fetches its chart ahead of the
+              // click so the page opens drawn.
               MouseArea {
                 id: cardMouse
                 anchors.fill: parent
                 hoverEnabled: true
-                acceptedButtons: Qt.NoButton
+                cursorShape: Qt.PointingHandCursor
+                onEntered: root.queuePrefetch(indexCard.modelData)
+                onClicked: root.openPage(indexCard.modelData)
               }
             }
           }

@@ -700,7 +700,54 @@ function chartAssetClass(asset) {
   return String(asset || "").toUpperCase() === "ETF" ? "etf" : "stocks"
 }
 
+// Nasdaq charts stocks and funds and nothing else: ask it for the S&P 500
+// and it answers "Symbol not exists." Indexes, treasuries and crypto are
+// charted from CNBC's bar service instead, which knows every symbol the
+// quote service does, in the same spelling. The rule is the quote's own: a
+// leading dot or a treasury prefix is an index, and ".CM=" is crypto.
+function chartSource(symbol) {
+  var s = String(symbol || "").trim().toUpperCase()
+  if (s.charAt(0) === "." || /^US\d/.test(s) || /\.CM=$/.test(s)) return "cnbc"
+  return "nasdaq"
+}
+
+// The bar each period is drawn from at CNBC. 1D is minute bars; the dated
+// ranges take the bar that lands near a point per pixel -- daily up to a
+// year, weekly across five, monthly for everything there is.
+var CNBC_BAR_INTERVALS = { "1D": "1M", "1M": "1D", "6M": "1D", "YTD": "1D",
+                           "1Y": "1D", "5Y": "1W", "MAX": "1MO" }
+
+// CNBC's window bounds are exchange wall-clock, YYYYMMDDHHMMSS, no zone.
+function cnbcStamp(ms) {
+  var d = new Date(ms)
+  function pad(n) { return (n < 10 ? "0" : "") + n }
+  return "" + d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + "000000"
+}
+
+// The 1D window reaches back a week rather than a day, so that a Monday
+// morning -- or the Tuesday after a holiday weekend -- still has a session
+// in it; parseChart keeps the last one and reads the close before it off the
+// same answer. The window ends tomorrow, not today: a reader west of New
+// York asking for "today" in exchange time would otherwise lose the session
+// in progress.
+function cnbcChartUrl(symbol, periodKey, nowMs) {
+  var sym = String(symbol || "").trim().toUpperCase()
+  var period = chartPeriod(periodKey)
+  var now = nowMs || Date.now()
+  var day = 24 * 60 * 60 * 1000
+  var from
+  if (period.days === 0) from = now - 7 * day
+  else if (period.days === -1) from = new Date(new Date(now).getFullYear(), 0, 1).getTime()
+  else if (period.days === -2) from = new Date(1970, 0, 1).getTime()
+  else from = now - period.days * day
+  var interval = CNBC_BAR_INTERVALS[period.key] || "1D"
+  return "https://ts-api.cnbc.com/harmony/app/bars/" + encodeURIComponent(sym)
+       + "/" + interval + "/" + cnbcStamp(from) + "/" + cnbcStamp(now + day)
+       + "/adjusted/EST5EDT.json"
+}
+
 function chartUrl(symbol, periodKey, assetClass, nowMs) {
+  if (chartSource(symbol) === "cnbc") return cnbcChartUrl(symbol, periodKey, nowMs)
   var sym = String(symbol || "").trim().toUpperCase()
   var period = chartPeriod(periodKey)
   var base = "https://api.nasdaq.com/api/quote/" + encodeURIComponent(sym)
@@ -716,13 +763,16 @@ function chartUrl(symbol, periodKey, assetClass, nowMs) {
 }
 
 // One series, flattened, plus the range and the move across it -- everything
-// the chart needs to draw itself and label its own change.
+// the chart needs to draw itself and label its own change. Both feeds land
+// here: Nasdaq's answer is told apart from CNBC's by its shape, so the panel
+// never has to know which one it asked.
 //
 // Returns null for a failed or empty answer, which the panel shows as an
 // error rather than as an empty chart: a flat line at zero looks like data.
-function parseChart(text) {
+function parseChart(text, periodKey) {
   var data = null
   try { data = JSON.parse(text) } catch (e) { return null }
+  if (data && data.barData) return parseCnbcChart(data, periodKey)
   var d = data ? data.data : null
   var rows = d ? d.chart : null
   if (!rows || !rows.length) return null
@@ -730,23 +780,86 @@ function parseChart(text) {
   // an HTTP error, so a first row with no price is a failure, not a series.
   if (rows[0].y === undefined || rows[0].y === null) return null
 
-  var step = Math.max(1, Math.ceil(rows.length / CHART_MAX_POINTS))
-  var points = []
-  var min = Infinity, max = -Infinity
+  var samples = []
   for (var i = 0; i < rows.length; i++) {
-    // Thin the middle, but never the last point: it is the current price, and
-    // dropping it makes the chart disagree with the number above it.
-    if (i % step !== 0 && i !== rows.length - 1) continue
-    var v = toNumber(rows[i].y)
-    if (!isFinite(v)) continue
     var t = Number(rows[i].x)
     // Nasdaq's `x` is exchange wall-clock dressed as an epoch -- 4:00 AM ET
     // comes through as 04:00 UTC -- so converting it to local time moves
     // every intraday chart by the reader's offset. The label the feed already
     // wrote is correct and is what the axis uses.
-    points.push({ t: isFinite(t) ? t : i,
-                  v: v,
-                  label: String((rows[i].z && rows[i].z.dateTime) || "") })
+    samples.push({ t: isFinite(t) ? t : i,
+                   v: toNumber(rows[i].y),
+                   label: String((rows[i].z && rows[i].z.dateTime) || "") })
+  }
+  return finishChart(samples,
+    toNumber(String(d.previousClose || "").replace(/[$,]/g, "")))
+}
+
+// CNBC's bars: `barData.priceBars`, each with a `close` and a `tradeTime` of
+// "20260924093000" -- exchange wall-clock with no zone, which is the same
+// thing Nasdaq's labels are. The axis labels are cut straight from it, in
+// the spellings axisLabel already reads: the minute on 1D, the date on the
+// rest. A "Symbol not exists." comes back as an HTTP error here, so an
+// answer with bars in it is a series.
+function parseCnbcChart(data, periodKey) {
+  var bars = data && data.barData ? data.barData.priceBars : null
+  if (!bars || !bars.length) return null
+  var intraday = chartPeriod(periodKey).days === 0
+  var samples = []
+  for (var i = 0; i < bars.length; i++) {
+    var stamp = String(bars[i].tradeTime || "")
+    if (!/^\d{14}$/.test(stamp)) continue
+    var v = toNumber(bars[i].close)
+    if (!isFinite(v)) continue
+    var t = Number(bars[i].tradeTimeinMills)
+    samples.push({ t: isFinite(t) ? t : i, v: v, day: stamp.slice(0, 8),
+                   label: intraday ? clockLabel(stamp) : dateLabel(stamp) })
+  }
+  if (!samples.length) return null
+
+  var previousClose = NaN
+  if (intraday) {
+    // The window held several sessions. The chart is the last of them, and
+    // the final bar before it is the close the day is read against.
+    var last = samples[samples.length - 1].day
+    var session = []
+    for (var j = 0; j < samples.length; j++) {
+      if (samples[j].day === last) session.push(samples[j])
+      else previousClose = samples[j].v
+    }
+    samples = session
+  }
+  return finishChart(samples, previousClose)
+}
+
+// "20260924093000" -> "9:30 AM ET", the way Nasdaq writes an intraday label.
+function clockLabel(stamp) {
+  var h = parseInt(stamp.slice(8, 10), 10)
+  var suffix = h >= 12 ? "PM" : "AM"
+  var h12 = h % 12 === 0 ? 12 : h % 12
+  return h12 + ":" + stamp.slice(10, 12) + " " + suffix + " ET"
+}
+
+// "20260924093000" -> "9/24/2026", the way Nasdaq writes a daily one.
+function dateLabel(stamp) {
+  return parseInt(stamp.slice(4, 6), 10) + "/" + parseInt(stamp.slice(6, 8), 10)
+       + "/" + stamp.slice(0, 4)
+}
+
+// Thin, range and describe a series: the half of a chart that does not
+// care which feed it came from.
+function finishChart(samples, previousClose) {
+  if (!samples || !samples.length) return null
+  var step = Math.max(1, Math.ceil(samples.length / CHART_MAX_POINTS))
+  var points = []
+  var min = Infinity, max = -Infinity
+  for (var i = 0; i < samples.length; i++) {
+    // Thin the middle, but never the last point: it is the current price, and
+    // dropping it makes the chart disagree with the number above it.
+    if (i % step !== 0 && i !== samples.length - 1) continue
+    var v = samples[i].v
+    if (!isFinite(v)) continue
+    points.push(samples[i])
     if (v < min) min = v
     if (v > max) max = v
   }
@@ -770,7 +883,7 @@ function parseChart(text) {
     down: change < 0,
     // The dashed line the intraday chart is read against. Only 1D has one:
     // over a month the opening price is a date, not a reference.
-    previousClose: toNumber(String(d.previousClose || "").replace(/[$,]/g, ""))
+    previousClose: previousClose
   }
 }
 

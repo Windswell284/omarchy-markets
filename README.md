@@ -215,6 +215,12 @@ Click a company in the watchlist — or press `o`, `Enter` or `Space` on it —
 and the right-hand side becomes that company: the price and the day's move,
 a chart, and the fundamentals underneath. `Esc` brings the news back.
 
+Clicking one of the index cards across the top does the same for the index:
+the S&P 500's page is its level, the day's move and the chart over every
+period, with no statements underneath because an index has none. The card
+whose page is open is filled in, the way the open watchlist row is marked,
+and clicking it again closes the page.
+
 ```
  AAPL                                        325.95
  Apple                               +0.82   +0.25%
@@ -248,7 +254,8 @@ intraday chart by the reader's own offset.
 
 The index cards stay across the top throughout. What the broad market is
 doing is context for reading one company, not a competing screen, and the
-news stack is what gives way.
+news stack is what gives way. Resting on a card fetches its chart the same
+way resting on a watchlist row does, so an index page opens already drawn.
 
 The number beside the periods is the move **across the period on screen**,
 which is not the day's change in the header: 1D agrees with it and every
@@ -264,6 +271,13 @@ in that order. There is no `5D`: the source serves 1D as minute bars and every
 other range as daily ones, so a five-day chart would be five dots joined by
 lines. Each period is fetched once and kept for the session; only 1D expires,
 after a minute. `r` refetches whatever is on screen.
+
+Stocks and funds are charted from Nasdaq, which charts nothing else: ask it
+for the S&P 500 and it answers "Symbol not exists." Indexes, treasuries and
+crypto come from CNBC's bar service instead — minute bars for 1D, daily up to
+a year, weekly across five and monthly for `MAX` — in the same spelling the
+quotes use, so `.SPX` on a card is `.SPX` in the request. Both answers are
+flattened into the same series, and the chart cannot tell which one drew it.
 
 **Charts are fetched before they are asked for.** Resting on a row — with the
 pointer or with the cursor — fetches that company's 1D chart in the
@@ -329,7 +343,8 @@ Three feeds, none of which needs an API key:
 | | Source |
 | --- | --- |
 | Quotes | CNBC's quote service |
-| Charts | Nasdaq's chart API — intraday for 1D, daily bars for every other period |
+| Charts | Nasdaq's chart API for stocks and funds — intraday for 1D, daily bars for every other period |
+| Index charts | CNBC's bar service, for indexes, treasuries and crypto — minute, daily, weekly and monthly bars |
 | Statements | Nasdaq's financials API — the quarterly and annual sets |
 | Symbol search | Nasdaq's symbol directory, downloaded and searched locally |
 | Unlisted symbols | Nasdaq's autocomplete, as a fallback |
